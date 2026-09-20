@@ -72,14 +72,14 @@ class AppController extends Controller
     {
         return response([
             'data' => [
-                'windows_version' => config('v2board.windows_version'),
-                'windows_download_url' => config('v2board.windows_download_url'),
-                'macos_version' => config('v2board.macos_version'),
-                'macos_download_url' => config('v2board.macos_download_url'),
                 'android_version' => config('v2board.android_version'),
                 'android_download_url' => config('v2board.android_download_url'),
                 'linux_version' => config('v2board.linux_version'),
-                'linux_download_url' => config('v2board.linux_download_url')
+                'linux_download_url' => config('v2board.linux_download_url'),
+                'macos_version' => config('v2board.macos_version'),
+                'macos_download_url' => config('v2board.macos_download_url'),
+                'windows_version' => config('v2board.windows_version'),
+                'windows_download_url' => config('v2board.windows_download_url')
             ]
         ]);
     }
