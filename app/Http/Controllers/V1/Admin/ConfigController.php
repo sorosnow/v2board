@@ -157,7 +157,9 @@ class ConfigController extends Controller
                 'macos_version' => config('v2board.macos_version'),
                 'macos_download_url' => config('v2board.macos_download_url'),
                 'android_version' => config('v2board.android_version'),
-                'android_download_url' => config('v2board.android_download_url')
+                'android_download_url' => config('v2board.android_download_url'),
+                'linux_version' => config('v2board.linux_version'),
+                'linux_download_url' => config('v2board.linux_download_url')
             ],
             'safe' => [
                 'email_verify' => (int)config('v2board.email_verify', 0),
