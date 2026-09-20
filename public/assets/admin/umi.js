@@ -6491,36 +6491,6 @@
                 }, "\u7528\u4e8e\u81ea\u6709\u5ba2\u6237\u7aef(APP)\u7684\u7248\u672c\u7ba1\u7406\u53ca\u66f4\u65b0"))))), f.a.createElement("div", {
                     className: ""
                 }, f.a.createElement(m, {
-                    title: "Windows",
-                    description: "Windows\u7aef\u7248\u672c\u53f7\u53ca\u4e0b\u8f7d\u5730\u5740"
-                }, f.a.createElement("input", {
-                    type: "text",
-                    className: "form-control",
-                    placeholder: "1.0.0",
-                    defaultValue: w.windows_version,
-                    onChange: e=>this.set("app", "windows_version", e.target.value)
-                }), f.a.createElement("input", {
-                    type: "text",
-                    className: "form-control mt-1",
-                    placeholder: "https://xxxx.com/xxx.exe",
-                    defaultValue: w.windows_download_url,
-                    onChange: e=>this.set("app", "windows_download_url", e.target.value)
-                })), f.a.createElement(m, {
-                    title: "macOS",
-                    description: "macOS\u7aef\u7248\u672c\u53f7\u53ca\u4e0b\u8f7d\u5730\u5740"
-                }, f.a.createElement("input", {
-                    type: "text",
-                    className: "form-control",
-                    placeholder: "1.0.0",
-                    defaultValue: w.macos_version,
-                    onChange: e=>this.set("app", "macos_version", e.target.value)
-                }), f.a.createElement("input", {
-                    type: "text",
-                    className: "form-control mt-1",
-                    placeholder: "https://xxxx.com/xxx.dmg",
-                    defaultValue: w.macos_download_url,
-                    onChange: e=>this.set("app", "macos_download_url", e.target.value)
-                })), f.a.createElement(m, {
                     title: "Android",
                     description: "Android\u7aef\u7248\u672c\u53f7\u53ca\u4e0b\u8f7d\u5730\u5740"
                 }, f.a.createElement("input", {
@@ -6550,6 +6520,36 @@
                     placeholder: "https://xxxx.com/xxx.deb",
                     defaultValue: w.linux_download_url,
                     onChange: e=>this.set("app", "linux_download_url", e.target.value)
+                })), f.a.createElement(m, {
+                    title: "macOS",
+                    description: "macOS\u7aef\u7248\u672c\u53f7\u53ca\u4e0b\u8f7d\u5730\u5740"
+                }, f.a.createElement("input", {
+                    type: "text",
+                    className: "form-control",
+                    placeholder: "1.0.0",
+                    defaultValue: w.macos_version,
+                    onChange: e=>this.set("app", "macos_version", e.target.value)
+                }), f.a.createElement("input", {
+                    type: "text",
+                    className: "form-control mt-1",
+                    placeholder: "https://xxxx.com/xxx.dmg",
+                    defaultValue: w.macos_download_url,
+                    onChange: e=>this.set("app", "macos_download_url", e.target.value)
+                })), f.a.createElement(m, {
+                    title: "Windows",
+                    description: "Windows\u7aef\u7248\u672c\u53f7\u53ca\u4e0b\u8f7d\u5730\u5740"
+                }, f.a.createElement("input", {
+                    type: "text",
+                    className: "form-control",
+                    placeholder: "1.0.0",
+                    defaultValue: w.windows_version,
+                    onChange: e=>this.set("app", "windows_version", e.target.value)
+                }), f.a.createElement("input", {
+                    type: "text",
+                    className: "form-control mt-1",
+                    placeholder: "https://xxxx.com/xxx.exe",
+                    defaultValue: w.windows_download_url,
+                    onChange: e=>this.set("app", "windows_download_url", e.target.value)
                 })))))))
             }
         }
