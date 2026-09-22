@@ -94,6 +94,11 @@ class SubscriptionParser
     private static function decode($raw)
     {
         $raw = trim((string)$raw);
+        // 有些订阅文件带 UTF-8 BOM（EF BB BF）：不剥掉会让首行 scheme 带上不可见字节，
+        // 明文源丢第一条、base64 源则整份解析失败
+        if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
+            $raw = substr($raw, 3);
+        }
         if ($raw === '') {
             return '';
         }
@@ -166,8 +171,15 @@ class SubscriptionParser
         $userinfo = substr($body, 0, $at);
         $hostport = substr($body, $at + 1);
 
+        // userinfo 有三种写法：SIP002 的 base64(method:password)、
+        // SIP002 的明文变体（method:password，可能 URL 编码）、
+        // 以及老式格式（整段 base64 已在上方解码，这里已是明文）
         $decoded = self::b64($userinfo);
         if ($decoded === null || strpos($decoded, ':') === false) {
+            $plain = rawurldecode($userinfo);
+            $decoded = strpos($plain, ':') !== false ? $plain : null;
+        }
+        if ($decoded === null) {
             self::skip('ss_bad_userinfo');
             return null;
         }

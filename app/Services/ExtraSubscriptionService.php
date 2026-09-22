@@ -341,8 +341,10 @@ class ExtraSubscriptionService
         if ($timeout < 3) {
             $timeout = 3;
         }
-        if ($timeout > 60) {
-            $timeout = 60;
+        // 上限 10s：本超时是在订阅请求里同步等待的，设太大（如 60s）会把用户这次
+        // 请求拖到客户端自身超时之后 -> 客户端报「更新订阅失败」，而本站节点其实是好的
+        if ($timeout > 10) {
+            $timeout = 10;
         }
 
         return array(
