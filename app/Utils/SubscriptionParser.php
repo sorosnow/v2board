@@ -2,11 +2,15 @@
 
 namespace App\Utils;
 
+use Symfony\Component\Yaml\Yaml;
+
 /**
  * 订阅内容解析器（附加订阅）
  *
- * 把「额外订阅链接」返回的内容（base64 编码或明文的 URI 列表）解析为
- * v2board 内部节点结构，以便复用现有 Protocol 渲染器一并下发。
+ * 支持两种输入格式：
+ *  ① base64 编码或明文的 URI 列表（ss:// / vmess:// / vless:// / …）
+ *  ② Clash / Mihomo YAML 配置（取其中的 proxies: 数组）
+ * 解析结果统一转为 v2board 内部节点结构，以复用现有 Protocol 渲染器下发。
  *
  * ⚠️ 关键设计：解析出的每个节点都带 `_credential` 字段。
  *    外部节点认证的是第三方自己的凭据（uuid/密码），**不能**被本站
@@ -55,6 +59,16 @@ class SubscriptionParser
     public static function parse($raw)
     {
         self::$skipped = array();
+
+        $raw = trim((string)$raw);
+        if ($raw === '') {
+            return array('nodes' => array(), 'skipped' => array());
+        }
+
+        // Clash / Mihomo YAML 配置（如 mihomo.yaml / clash.yaml）
+        if (self::looksLikeClashYaml($raw)) {
+            return self::parseClashYaml($raw);
+        }
 
         $nodes = array();
         $lines = preg_split('/\r\n|\r|\n/', self::decode($raw));
@@ -235,9 +249,14 @@ class SubscriptionParser
             $name = $cfg['ps'];
         }
 
+        $sni = isset($cfg['sni']) ? $cfg['sni'] : (isset($cfg['host']) ? $cfg['host'] : '');
+        $insecure = isset($cfg['allowInsecure']) ? (int)$cfg['allowInsecure'] : 0;
+        // ⚠️ vmess 的 ClashMeta::buildVmess() 只读 camelCase，故两套键名都写
         $tlsSettings = array(
-            'server_name'    => isset($cfg['sni']) ? $cfg['sni'] : (isset($cfg['host']) ? $cfg['host'] : ''),
-            'allow_insecure' => isset($cfg['allowInsecure']) ? (int)$cfg['allowInsecure'] : 0,
+            'server_name'    => $sni,
+            'serverName'     => $sni,
+            'allow_insecure' => $insecure,
+            'allowInsecure'  => $insecure,
         );
         $network = !empty($cfg['net']) ? $cfg['net'] : 'tcp';
         $networkSettings = self::vmessNetworkSettings($cfg, $network);
@@ -554,6 +573,484 @@ class SubscriptionParser
         $node['networkSettings'] = $networkSettings;
 
         return $node;
+    }
+
+    /* ------------------------------------------------------------------
+     |  Clash / Mihomo YAML
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 判断是否为 Clash / Mihomo YAML 配置
+     *
+     * @param  string $raw
+     * @return bool
+     */
+    private static function looksLikeClashYaml($raw)
+    {
+        return (bool)preg_match('/^[ \t]*(proxies|proxy-providers|proxy-groups)[ \t]*:/m', $raw);
+    }
+
+    /**
+     * 解析 Clash / Mihomo YAML 配置中的 proxies
+     *
+     * @param  string $raw
+     * @return array ['nodes' => 节点数组, 'skipped' => [原因 => 条数]]
+     */
+    private static function parseClashYaml($raw)
+    {
+        try {
+            $data = Yaml::parse($raw);
+        } catch (\Exception $e) {
+            self::skip('clash_yaml_parse_failed');
+            return array('nodes' => array(), 'skipped' => self::$skipped);
+        }
+
+        if (!is_array($data) || empty($data['proxies']) || !is_array($data['proxies'])) {
+            self::skip('clash_yaml_no_proxies');
+            return array('nodes' => array(), 'skipped' => self::$skipped);
+        }
+
+        $nodes = array();
+        foreach ($data['proxies'] as $proxy) {
+            if (!is_array($proxy)) {
+                self::skip('clash_bad_entry');
+                continue;
+            }
+            $node = self::clashProxyToNode($proxy);
+            if ($node !== null) {
+                $nodes[] = $node;
+            }
+        }
+
+        return array('nodes' => $nodes, 'skipped' => self::$skipped);
+    }
+
+    /**
+     * 单个 Clash proxy 对象 → v2board 内部节点
+     *
+     * @param  array $p
+     * @return array|null
+     */
+    private static function clashProxyToNode($p)
+    {
+        $type = isset($p['type']) ? strtolower(trim((string)$p['type'])) : '';
+        $name = isset($p['name']) ? (string)$p['name'] : '';
+
+        if (empty($p['server']) || empty($p['port'])) {
+            self::skip('clash_no_server_or_port');
+            return null;
+        }
+        $host = (string)$p['server'];
+        $port = $p['port'];
+
+        switch ($type) {
+            case 'ss':
+                return self::clashShadowsocks($p, $name, $host, $port);
+            case 'vmess':
+                return self::clashVmess($p, $name, $host, $port);
+            case 'vless':
+                return self::clashVless($p, $name, $host, $port);
+            case 'trojan':
+                return self::clashTrojan($p, $name, $host, $port);
+            case 'hysteria':
+            case 'hysteria2':
+                return self::clashHysteria($p, $name, $host, $port, $type);
+            case 'tuic':
+                return self::clashTuic($p, $name, $host, $port);
+            case 'anytls':
+                return self::clashAnyTls($p, $name, $host, $port);
+            default:
+                // http / socks5 / ssr / snell / wireguard 等 v2board 无对应节点类型
+                self::skip('clash_unsupported_type:' . $type);
+                return null;
+        }
+    }
+
+    /**
+     * Clash ss → shadowsocks
+     *
+     * @param  array  $p
+     * @param  string $name
+     * @param  string $host
+     * @param  mixed  $port
+     * @return array|null
+     */
+    private static function clashShadowsocks($p, $name, $host, $port)
+    {
+        $cipher = isset($p['cipher']) ? (string)$p['cipher'] : '';
+        if ($cipher === '' || empty($p['password'])) {
+            self::skip('clash_ss_no_cipher_or_password');
+            return null;
+        }
+        if (strpos($cipher, '2022-blake3') !== false) {
+            self::skip('ss_2022_unsupported');
+            return null;
+        }
+
+        $node = self::base('shadowsocks', $name, $host, $port, (string)$p['password']);
+        $node['cipher'] = $cipher;
+
+        if (!empty($p['plugin'])) {
+            $opts = (isset($p['plugin-opts']) && is_array($p['plugin-opts'])) ? $p['plugin-opts'] : array();
+            if (strpos((string)$p['plugin'], 'obfs') !== false
+                && isset($opts['mode']) && $opts['mode'] === 'http'
+            ) {
+                $node['obfs'] = 'http';
+                $node['obfs-host'] = isset($opts['host']) ? (string)$opts['host'] : '';
+                $node['obfs-path'] = isset($opts['path']) ? (string)$opts['path'] : '';
+            }
+        }
+
+        return $node;
+    }
+
+    /**
+     * Clash vmess → vmess
+     *
+     * @param  array  $p
+     * @param  string $name
+     * @param  string $host
+     * @param  mixed  $port
+     * @return array|null
+     */
+    private static function clashVmess($p, $name, $host, $port)
+    {
+        $uuid = isset($p['uuid']) ? (string)$p['uuid'] : '';
+        if ($uuid === '') {
+            self::skip('clash_vmess_no_uuid');
+            return null;
+        }
+
+        $network = !empty($p['network']) ? (string)$p['network'] : 'tcp';
+        $tlsSettings = self::clashTlsSettings($p);
+        $networkSettings = self::clashNetworkSettings($p, $network);
+
+        $node = self::base('vmess', $name, $host, $port, $uuid);
+        $node['tls'] = !empty($p['tls']) ? 1 : 0;
+        $node['tls_settings'] = $tlsSettings;
+        $node['tlsSettings'] = $tlsSettings;
+        $node['network'] = $network;
+        $node['network_settings'] = $networkSettings;
+        $node['networkSettings'] = $networkSettings;
+
+        return $node;
+    }
+
+    /**
+     * Clash vless → vless
+     *
+     * @param  array  $p
+     * @param  string $name
+     * @param  string $host
+     * @param  mixed  $port
+     * @return array|null
+     */
+    private static function clashVless($p, $name, $host, $port)
+    {
+        $uuid = isset($p['uuid']) ? (string)$p['uuid'] : '';
+        if ($uuid === '') {
+            self::skip('clash_vless_no_uuid');
+            return null;
+        }
+
+        $network = !empty($p['network']) ? (string)$p['network'] : 'tcp';
+        $tlsSettings = self::clashTlsSettings($p);
+        $networkSettings = self::clashNetworkSettings($p, $network);
+
+        // reality 用 tls=2 表达（与本站 ServerVless 约定一致）
+        $tls = 0;
+        if (!empty($p['reality-opts'])) {
+            $tls = 2;
+        } elseif (!empty($p['tls'])) {
+            $tls = 1;
+        }
+
+        $node = self::base('vless', $name, $host, $port, $uuid);
+        $node['tls'] = $tls;
+        $node['tls_settings'] = $tlsSettings;
+        $node['tlsSettings'] = $tlsSettings;
+        $node['flow'] = isset($p['flow']) ? (string)$p['flow'] : '';
+        $node['encryption'] = 'none';
+        $node['network'] = $network;
+        $node['network_settings'] = $networkSettings;
+        $node['networkSettings'] = $networkSettings;
+
+        return $node;
+    }
+
+    /**
+     * Clash trojan → trojan
+     *
+     * @param  array  $p
+     * @param  string $name
+     * @param  string $host
+     * @param  mixed  $port
+     * @return array|null
+     */
+    private static function clashTrojan($p, $name, $host, $port)
+    {
+        $password = isset($p['password']) ? (string)$p['password'] : '';
+        if ($password === '') {
+            self::skip('clash_trojan_no_password');
+            return null;
+        }
+
+        $network = !empty($p['network']) ? (string)$p['network'] : 'tcp';
+        $tlsSettings = self::clashTlsSettings($p);
+        $networkSettings = self::clashNetworkSettings($p, $network);
+
+        $node = self::base('trojan', $name, $host, $port, $password);
+        $node['tls'] = 1;
+        $node['tls_settings'] = $tlsSettings;
+        $node['tlsSettings'] = $tlsSettings;
+        $node['server_name'] = $tlsSettings['server_name'];
+        $node['allow_insecure'] = $tlsSettings['allow_insecure'];
+        $node['network'] = $network;
+        $node['network_settings'] = $networkSettings;
+        $node['networkSettings'] = $networkSettings;
+
+        return $node;
+    }
+
+    /**
+     * Clash hysteria / hysteria2 → hysteria（用 version 区分，与本站模型一致）
+     *
+     * @param  array  $p
+     * @param  string $name
+     * @param  string $host
+     * @param  mixed  $port
+     * @param  string $type
+     * @return array|null
+     */
+    private static function clashHysteria($p, $name, $host, $port, $type)
+    {
+        $isV2 = ($type === 'hysteria2');
+
+        if ($isV2) {
+            $credential = isset($p['password']) ? (string)$p['password'] : '';
+        } else {
+            $credential = '';
+            foreach (array('auth-str', 'auth_str', 'auth') as $key) {
+                if (!empty($p[$key])) {
+                    $credential = (string)$p[$key];
+                    break;
+                }
+            }
+        }
+        if ($credential === '') {
+            self::skip('clash_hysteria_no_credential');
+            return null;
+        }
+
+        $tlsSettings = self::clashTlsSettings($p);
+
+        $node = self::base('hysteria', $name, $host, $port, $credential);
+        $node['version'] = $isV2 ? 2 : 1;
+        $node['server_name'] = $tlsSettings['server_name'];
+        $node['insecure'] = $tlsSettings['allow_insecure'];
+        $node['tls_settings'] = $tlsSettings;
+        $node['tlsSettings'] = $tlsSettings;
+        $node['up_mbps'] = self::intOrZero(isset($p['up']) ? $p['up'] : null);
+        $node['down_mbps'] = self::intOrZero(isset($p['down']) ? $p['down'] : null);
+        $node['server_key'] = '';
+        if (!empty($p['obfs'])) {
+            $node['obfs'] = (string)$p['obfs'];
+            $node['obfs_password'] = isset($p['obfs-password']) ? (string)$p['obfs-password'] : '';
+        }
+
+        return $node;
+    }
+
+    /**
+     * Clash tuic → tuic
+     *
+     * @param  array  $p
+     * @param  string $name
+     * @param  string $host
+     * @param  mixed  $port
+     * @return array|null
+     */
+    private static function clashTuic($p, $name, $host, $port)
+    {
+        $uuid = isset($p['uuid']) ? (string)$p['uuid'] : '';
+        if ($uuid === '') {
+            self::skip('clash_tuic_no_uuid');
+            return null;
+        }
+
+        $tlsSettings = self::clashTlsSettings($p);
+
+        $node = self::base('tuic', $name, $host, $port, $uuid);
+        $node['server_name'] = $tlsSettings['server_name'];
+        $node['insecure'] = $tlsSettings['allow_insecure'];
+        $node['disable_sni'] = !empty($p['disable-sni']) ? 1 : 0;
+        // ClashMeta::buildTuic() 直接读 $server['zero_rtt_handshake']（无 ??），必须显式赋值
+        $node['zero_rtt_handshake'] = !empty($p['reduce-rtt']) ? 1 : 0;
+        $node['udp_relay_mode'] = isset($p['udp-relay-mode']) ? (string)$p['udp-relay-mode'] : 'native';
+        $node['congestion_control'] = isset($p['congestion-controller'])
+            ? (string)$p['congestion-controller'] : 'bbr';
+        $node['tls_settings'] = $tlsSettings;
+        $node['tlsSettings'] = $tlsSettings;
+
+        return $node;
+    }
+
+    /**
+     * Clash anytls → anytls
+     *
+     * @param  array  $p
+     * @param  string $name
+     * @param  string $host
+     * @param  mixed  $port
+     * @return array|null
+     */
+    private static function clashAnyTls($p, $name, $host, $port)
+    {
+        $password = isset($p['password']) ? (string)$p['password'] : '';
+        if ($password === '') {
+            self::skip('clash_anytls_no_password');
+            return null;
+        }
+
+        $network = !empty($p['network']) ? (string)$p['network'] : 'tcp';
+        $tlsSettings = self::clashTlsSettings($p);
+        $networkSettings = self::clashNetworkSettings($p, $network);
+
+        $node = self::base('anytls', $name, $host, $port, $password);
+        $node['tls'] = 1;
+        $node['server_name'] = $tlsSettings['server_name'];
+        $node['insecure'] = $tlsSettings['allow_insecure'];
+        $node['tls_settings'] = $tlsSettings;
+        $node['tlsSettings'] = $tlsSettings;
+        $node['network'] = $network;
+        $node['network_settings'] = $networkSettings;
+        $node['networkSettings'] = $networkSettings;
+
+        return $node;
+    }
+
+    /**
+     * Clash proxy → tls_settings
+     *
+     * @param  array $p
+     * @return array
+     */
+    private static function clashTlsSettings($p)
+    {
+        $sni = '';
+        if (!empty($p['servername'])) {
+            $sni = (string)$p['servername'];
+        } elseif (!empty($p['sni'])) {
+            $sni = (string)$p['sni'];
+        }
+
+        $insecure = !empty($p['skip-cert-verify']) ? 1 : 0;
+
+        // ⚠️ 同时写 snake_case 与 camelCase：
+        //    vless/trojan/tuic 渲染器读 server_name / allow_insecure，
+        //    而 ClashMeta::buildVmess() 只认 serverName / allowInsecure。
+        $settings = array(
+            'server_name'    => $sni,
+            'serverName'     => $sni,
+            'allow_insecure' => $insecure,
+            'allowInsecure'  => $insecure,
+        );
+        if (!empty($p['client-fingerprint'])) {
+            $settings['fingerprint'] = (string)$p['client-fingerprint'];
+        }
+        if (!empty($p['reality-opts']) && is_array($p['reality-opts'])) {
+            if (!empty($p['reality-opts']['public-key'])) {
+                $settings['public_key'] = (string)$p['reality-opts']['public-key'];
+            }
+            if (!empty($p['reality-opts']['short-id'])) {
+                $settings['short_id'] = (string)$p['reality-opts']['short-id'];
+            }
+        }
+
+        return $settings;
+    }
+
+    /**
+     * Clash proxy → network_settings
+     *
+     * @param  array  $p
+     * @param  string $network
+     * @return array
+     */
+    private static function clashNetworkSettings($p, $network)
+    {
+        $settings = array();
+        switch ($network) {
+            case 'ws':
+                if (!empty($p['ws-opts']) && is_array($p['ws-opts'])) {
+                    if (!empty($p['ws-opts']['path'])) {
+                        $settings['path'] = (string)$p['ws-opts']['path'];
+                    }
+                    if (!empty($p['ws-opts']['headers']['Host'])) {
+                        $settings['headers'] = array('Host' => (string)$p['ws-opts']['headers']['Host']);
+                    }
+                }
+                break;
+            case 'grpc':
+                if (!empty($p['grpc-opts']['grpc-service-name'])) {
+                    $settings['serviceName'] = (string)$p['grpc-opts']['grpc-service-name'];
+                }
+                break;
+            case 'httpupgrade':
+                if (!empty($p['httpupgrade-opts']['path'])) {
+                    $settings['path'] = (string)$p['httpupgrade-opts']['path'];
+                }
+                if (!empty($p['httpupgrade-opts']['host'])) {
+                    $settings['host'] = (string)$p['httpupgrade-opts']['host'];
+                }
+                break;
+            case 'xhttp':
+                if (!empty($p['xhttp-opts']['path'])) {
+                    $settings['path'] = (string)$p['xhttp-opts']['path'];
+                }
+                if (!empty($p['xhttp-opts']['host'])) {
+                    $settings['host'] = (string)$p['xhttp-opts']['host'];
+                }
+                if (!empty($p['xhttp-opts']['mode'])) {
+                    $settings['mode'] = (string)$p['xhttp-opts']['mode'];
+                }
+                break;
+            case 'http':
+            case 'h2':
+                $path = null;
+                if (!empty($p['http-opts']['path'])) {
+                    $path = $p['http-opts']['path'];
+                } elseif (!empty($p['h2-opts']['path'])) {
+                    $path = $p['h2-opts']['path'];
+                }
+                if ($path !== null) {
+                    $settings['path'] = is_array($path) ? (string)reset($path) : (string)$path;
+                }
+                $host = null;
+                if (!empty($p['http-opts']['headers']['Host'])) {
+                    $host = $p['http-opts']['headers']['Host'];
+                } elseif (!empty($p['h2-opts']['host'])) {
+                    $host = $p['h2-opts']['host'];
+                }
+                if ($host !== null) {
+                    $settings['headers'] = array(
+                        'Host' => is_array($host) ? (string)reset($host) : (string)$host,
+                    );
+                }
+                break;
+        }
+        return $settings;
+    }
+
+    /**
+     * 数值归一（Clash 里 up/down 可能是空串）
+     *
+     * @param  mixed $value
+     * @return int
+     */
+    private static function intOrZero($value)
+    {
+        return is_numeric($value) ? (int)$value : 0;
     }
 
     /* ------------------------------------------------------------------
