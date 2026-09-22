@@ -46,6 +46,10 @@ class ExtraSubscriptionService
     /** 拉取占位锁 TTL（秒）；持有者完成后主动释放，残留过期仅作崩溃兜底 */
     const FETCH_LOCK_TTL = 60;
 
+    /** 拉取失败时的缓存 TTL（秒）：上游抖一下也会写入空结果，用短 TTL 让它在
+     *  1 分钟内自动恢复重试，而不是缺席整个 TTL */
+    const FAIL_CACHE_TTL = 60;
+
     /** 链接条数上限（超出丢弃并记 warning） */
     const MAX_URLS = 10;
 
@@ -221,11 +225,13 @@ class ExtraSubscriptionService
         $client = new Client();
         $promises = array();
         $empty = array('nodes' => array(), 'skipped' => array());
+        // 失败（含超限、非法 URL）写短 TTL，避免一次抖动就让该链接缺席整个 TTL
+        $failTtl = min($ttl, self::FAIL_CACHE_TTL);
 
         foreach ($misses as $url => $cacheKey) {
             // 仅允许 http/https；不通过则不请求，直接按失败缓存
             if (!$this->isUrlAllowed($url)) {
-                Cache::put($cacheKey, $empty, $ttl);
+                Cache::put($cacheKey, $empty, $failTtl);
                 Cache::forget($cacheKey . '_fetching');
                 continue;
             }
@@ -247,7 +253,7 @@ class ExtraSubscriptionService
                 $body = $this->readBody($response->getBody());
                 if ($body === null) {
                     Log::warning('extra subscribe: response too large - ' . $this->maskUrl($url));
-                    Cache::put($cacheKey, $empty, $ttl);
+                    Cache::put($cacheKey, $empty, $failTtl);
                 } else {
                     $parsed = SubscriptionParser::parse($body);
                     // 无条件记录节点数：成功但 0 节点时也要有日志，否则排查是黑盒
@@ -260,8 +266,8 @@ class ExtraSubscriptionService
                 // Guzzle 异常消息里带完整 URL（含 token），先打码再落日志
                 $message = str_replace($url, $this->maskUrl($url), $e->getMessage());
                 Log::warning('extra subscribe: fetch failed - ' . $message);
-                // 失败也写缓存（空结果），避免持续打第三方
-                Cache::put($cacheKey, $empty, $ttl);
+                // 失败也写缓存（空结果，短 TTL），避免持续打第三方
+                Cache::put($cacheKey, $empty, $failTtl);
             } finally {
                 // 主动释放占位，异常终止时下一轮可立即重试
                 Cache::forget($cacheKey . '_fetching');

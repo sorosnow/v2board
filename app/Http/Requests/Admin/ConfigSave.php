@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Admin;
 
+use App\Services\ExtraSubscriptionService;
 use Illuminate\Foundation\Http\FormRequest;
 
 class ConfigSave extends FormRequest
@@ -146,6 +147,7 @@ class ConfigSave extends FormRequest
 
         // 额外订阅链接是**多行字符串**（回车换行），逐行校验（空行跳过）
         $rules['extra_subscribe_url'][] = function ($attribute, $value, $fail) {
+            $count = 0;
             foreach (preg_split('/[\r\n]+/', (string)$value) as $line) {
                 $line = trim($line);
                 if ($line === '') {
@@ -155,6 +157,13 @@ class ConfigSave extends FormRequest
                     $fail('额外订阅链接格式不正确，必须为 http(s):// 开头的完整地址（一行一条）');
                     return;
                 }
+                $count++;
+            }
+            // 与服务端的 ExtraSubscriptionService::MAX_URLS 对齐：
+            // 原来超过上限只是服务端静默丢弃，这里直接拒绝，管理员当场就知道
+            if ($count > ExtraSubscriptionService::MAX_URLS) {
+                $fail('额外订阅链接最多 ' . ExtraSubscriptionService::MAX_URLS
+                    . ' 条（当前 ' . $count . ' 条）');
             }
         };
         return $rules;
