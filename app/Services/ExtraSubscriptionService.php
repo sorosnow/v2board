@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Log;
  * 下发的节点列表后面（与 custom_subscribe_url 的「替换」语义不同）。
  *
  * 规则：
+ *  - 支持**多条**链接：`extra_subscribe_url` 一行一条（最多 `MAX_URLS` 条），
+ *    每条**独立缓存**，一条挂掉不影响其他条
  *  - 按节点名去重，**本站节点优先**（重名的附加节点不下发）
  *  - 附加节点保留其**自身凭据**（`_credential`），不会被本站用户 uuid 覆盖
  *  - 拉取失败 / 未配置 / 未开启 → **静默降级**，只下发本站节点
@@ -41,6 +43,14 @@ class ExtraSubscriptionService
      * 缓存最短 TTL（秒）
      */
     const MIN_CACHE_TTL = 30;
+
+    /**
+     * 支持的附加订阅链接条数上限
+     *
+     * ⚠️ 多条链接是**顺序**拉取的，最坏耗时 ≈ 条数 × 超时，
+     *    所以上限不能太大，否则首次拉取会把订阅请求拖死。
+     */
+    const MAX_URLS = 10;
 
     /**
      * 把「额外订阅」的节点合并进本站节点列表
@@ -87,7 +97,7 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 拉取并解析附加订阅节点（带缓存）
+     * 拉取并解析附加订阅节点（支持多条链接，各自独立缓存）
      *
      * @return array
      */
@@ -97,8 +107,8 @@ class ExtraSubscriptionService
             return array();
         }
 
-        $url = trim((string)config('v2board.extra_subscribe_url', ''));
-        if ($url === '') {
+        $urls = $this->urls();
+        if (!$urls) {
             return array();
         }
 
@@ -107,29 +117,113 @@ class ExtraSubscriptionService
             $ttl = self::MIN_CACHE_TTL;
         }
 
-        $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
+        $nodes = array();
+        foreach ($urls as $url) {
+            // 每条链接独立缓存：一条挂掉不影响其他条，也不会反复重试
+            $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
 
-        // 注意：不能用 Cache::remember —— 失败时缓存 null 会被当作 miss 反复重试
-        $cached = Cache::get($cacheKey);
-        if ($cached === null) {
-            $body = $this->request($url);
-            if ($body === null) {
-                // 失败也写入缓存（空串），避免持续打第三方
-                $cached = array('nodes' => array(), 'skipped' => array());
-            } else {
-                $parsed = SubscriptionParser::parse($body);
-                $cached = array(
-                    'nodes'   => $parsed['nodes'],
-                    'skipped' => $parsed['skipped'],
-                );
-                if (!empty($parsed['skipped'])) {
-                    Log::debug('extra subscribe skipped', $parsed['skipped']);
+            // 注意：不能用 Cache::remember —— 失败时缓存 null 会被当作 miss 反复重试
+            $cached = Cache::get($cacheKey);
+            if ($cached === null) {
+                $cached = $this->fetchOne($url);
+                Cache::put($cacheKey, $cached, $ttl);
+            }
+
+            if (!empty($cached['nodes'])) {
+                foreach ($cached['nodes'] as $node) {
+                    $nodes[] = $node;
                 }
             }
-            Cache::put($cacheKey, $cached, $ttl);
         }
 
-        return isset($cached['nodes']) ? $cached['nodes'] : array();
+        // 多条之间的重名由 merge() 统一按名去重（先到先得）
+        return $nodes;
+    }
+
+    /**
+     * 拉取并解析**单条**附加订阅链接
+     *
+     * @param  string $url
+     * @return array ['nodes' => [], 'skipped' => []]
+     */
+    private function fetchOne($url)
+    {
+        $body = $this->request($url);
+        if ($body === null) {
+            // 失败也写入缓存（空数组），避免持续打第三方
+            return array('nodes' => array(), 'skipped' => array());
+        }
+
+        $parsed = SubscriptionParser::parse($body);
+        if (!empty($parsed['skipped'])) {
+            // 用打码后的地址，避免把订阅 token 写进日志
+            Log::debug('extra subscribe skipped: ' . $this->maskUrl($url), $parsed['skipped']);
+        }
+
+        return array(
+            'nodes'   => $parsed['nodes'],
+            'skipped' => $parsed['skipped'],
+        );
+    }
+
+    /**
+     * 读取「额外订阅链接」配置，解析为去重后的链接数组
+     *
+     * 支持多行（一行一条），同时兼容旧的单条写法（无换行）。
+     * 这里只做拆分/去重/限流，合法性交给 request() 校验并记日志。
+     *
+     * @return array
+     */
+    private function urls()
+    {
+        $raw = config('v2board.extra_subscribe_url', '');
+
+        if (is_array($raw)) {
+            $lines = $raw;
+        } else {
+            $lines = preg_split('/[\r\n]+/', (string)$raw);
+        }
+
+        $urls = array();
+        foreach ($lines as $line) {
+            $line = trim((string)$line);
+            if ($line === '' || in_array($line, $urls, true)) {
+                continue;
+            }
+            $urls[] = $line;
+        }
+
+        if (count($urls) > self::MAX_URLS) {
+            Log::warning('extra subscribe: too many urls (' . count($urls)
+                . '), only the first ' . self::MAX_URLS . ' will be used');
+            $urls = array_slice($urls, 0, self::MAX_URLS);
+        }
+
+        return $urls;
+    }
+
+    /**
+     * 给 URL 打码（只保留 scheme/host/port/path，丢掉 query，即订阅 token）
+     *
+     * @param  string $url
+     * @return string
+     */
+    private function maskUrl($url)
+    {
+        $parts = parse_url($url);
+        if (!$parts || empty($parts['host'])) {
+            return '(invalid url)';
+        }
+
+        $masked = (empty($parts['scheme']) ? 'http' : $parts['scheme']) . '://' . $parts['host'];
+        if (!empty($parts['port'])) {
+            $masked .= ':' . $parts['port'];
+        }
+        if (!empty($parts['path'])) {
+            $masked .= $parts['path'];
+        }
+
+        return $masked;
     }
 
     /**
@@ -187,7 +281,9 @@ class ExtraSubscriptionService
             }
             return $body;
         } catch (\Exception $e) {
-            Log::warning('extra subscribe: fetch failed - ' . $e->getMessage());
+            // ⚠️ Guzzle 会把完整 URL（含订阅 token）拼进异常消息，先替换成打码地址再落日志
+            $message = str_replace($url, $this->maskUrl($url), $e->getMessage());
+            Log::warning('extra subscribe: fetch failed - ' . $message);
             return null;
         }
     }

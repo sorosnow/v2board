@@ -59,7 +59,8 @@ class ConfigSave extends FormRequest
         'subscribe_limit_expire' => 'nullable|integer',
         // extra subscribe（附加订阅节点：把额外订阅的节点拼接在本站节点之后下发）
         'extra_subscribe_enable' => 'in:0,1',
-        'extra_subscribe_url' => 'nullable|url',
+        // ⚠️ 多行字符串（一行一条链接），所以不能用 url 规则，改在 rules() 里逐行校验
+        'extra_subscribe_url' => 'nullable|string|max:5000',
         'extra_subscribe_cache_ttl' => 'nullable|integer',
         'extra_subscribe_timeout' => 'nullable|integer',
         // server
@@ -133,6 +134,20 @@ class ConfigSave extends FormRequest
                         continue;
                     }
                     $fail('充值奖励格式不正确，必须为充值金额:奖励金额');
+                }
+            }
+        };
+
+        // 额外订阅链接可能有多行，逐行校验（空行跳过）
+        $rules['extra_subscribe_url'][] = function ($attribute, $value, $fail) {
+            foreach (preg_split('/[\r\n]+/', (string)$value) as $line) {
+                $line = trim($line);
+                if ($line === '') {
+                    continue;
+                }
+                if (!preg_match('#^https?://[^\s]+$#i', $line)) {
+                    $fail('额外订阅链接格式不正确，必须为 http(s):// 开头的完整地址（一行一条）');
+                    return;
                 }
             }
         };
