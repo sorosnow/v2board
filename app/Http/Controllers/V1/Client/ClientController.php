@@ -72,10 +72,14 @@ class ClientController extends Controller
                 }
             } else {
                 $servers = $serverService->getAvailableServers($user);
-            }
 
-            // 合并「额外订阅」节点：按节点名去重（本站优先），拉取失败静默降级
-            $servers = (new ExtraSubscriptionService())->merge($servers);
+                // 合并「额外订阅」节点：按节点名去重（本站优先），拉取失败静默降级
+                // ⚠️ 只在「下发本站节点」这条路径上合并。
+                //    custom_subscribe_url 是给异常用户用的「替换」通道（原样透传、
+                //    不经过本站渲染），附加订阅不得参与——否则该用户仍能拿到可用的
+                //    第三方节点，与「剥夺原有节点」的目的相悖。
+                $servers = (new ExtraSubscriptionService())->merge($servers);
+            }
 
             if($flag) {
                 if (!strpos($flag, 'sing')) {
