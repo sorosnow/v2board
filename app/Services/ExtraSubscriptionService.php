@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
  * 下发的节点列表后面（与 custom_subscribe_url 的「替换」语义不同）。
  *
  * 规则：
- *  - 支持**多条**链接：后台提供 2 个固定槽位（`extra_subscribe_url_1` ~ `_2`），
+ *  - 支持**多条**链接：`extra_subscribe_url` 一行一条（**回车换行**，不支持逗号），
  *    每条**独立缓存**，一条挂掉不影响其他条
  *  - 按节点名去重，**本站节点优先**（重名的附加节点不下发）
  *  - 附加节点保留其**自身凭据**（`_credential`），不会被本站用户 uuid 覆盖
@@ -68,11 +68,7 @@ class ExtraSubscriptionService
     const FETCH_LOCK_TTL = 60;
 
     /**
-     * 支持的附加订阅链接条数上限
-     *
-     * ⚠️ 这是**防御性上限**，不是后台槽位数（后台固定 2 个槽）。
-     *    只有单个槽里误粘贴了逗号/换行分隔的多条链接时才可能超过 2，
-     *    超过部分会被丢弃并记 warning。
+     * 支持的附加订阅链接条数上限（防御性上限：超出部分丢弃并记 warning）
      */
     const MAX_URLS = 10;
 
@@ -268,38 +264,32 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 读取「额外订阅链接」配置（固定 5 个槽位），解析为去重后的链接数组
+     * 读取「额外订阅链接」配置，解析为去重后的链接数组
      *
-     * 兼容旧写法：槽位里若误粘贴了多行或逗号分隔的内容，也会被拆开（幂等）。
+     * 一行一条，**用回车换行**分隔（不支持逗号）。
+     * 历史槽位键 extra_subscribe_url_1/_2 不再读取，只在后台回显到输入框，
+     * 后台保存一次即完成迁移（避免旧值变成从后台清不掉的「幽灵链接」）。
      * 这里只做拆分/去重/限流，合法性交给 isUrlAllowed() 校验并记日志。
      *
      * @return array
      */
     private function urls()
     {
-        $lines = array();
-        foreach (self::URL_KEYS as $key) {
-            $value = config('v2board.' . $key, '');
-            if (is_array($value)) {
-                foreach ($value as $item) {
-                    $lines[] = (string)$item;
-                }
-                continue;
-            }
-            foreach (preg_split('/[\r\n]+/', (string)$value) as $item) {
-                $lines[] = $item;
-            }
+        $raw = config('v2board.extra_subscribe_url', '');
+
+        if (is_array($raw)) {
+            $lines = $raw;
+        } else {
+            $lines = preg_split('/[\r\n]+/', (string)$raw);
         }
 
         $urls = array();
         foreach ($lines as $line) {
-            foreach ($this->splitByComma($line) as $url) {
-                $url = trim((string)$url);
-                if ($url === '' || in_array($url, $urls, true)) {
-                    continue;
-                }
-                $urls[] = $url;
+            $line = trim((string)$line);
+            if ($line === '' || in_array($line, $urls, true)) {
+                continue;
             }
+            $urls[] = $line;
         }
 
         if (count($urls) > self::MAX_URLS) {
@@ -310,53 +300,6 @@ class ExtraSubscriptionService
 
         return $urls;
     }
-
-    /**
-     * 拆分行内用逗号并列的多条链接
-     *
-     * ⚠️ 只有当按逗号拆开后**每一段**都以 http(s):// 开头时才拆，
-     *    否则原样返回。这样既能兼容「一行逗号并列多条」的习惯写法，
-     *    又不会误伤 query 里本来就含逗号的链接（如 ?flag=clash,yaml）。
-     *
-     * @param  string $line
-     * @return array
-     */
-    private function splitByComma($line)
-    {
-        $line = trim((string)$line);
-        if ($line === '' || strpos($line, ',') === false) {
-            return array($line);
-        }
-
-        $parts = array();
-        foreach (explode(',', $line) as $part) {
-            $part = trim($part);
-            if ($part === '') {
-                continue;
-            }
-            // 出现非链接片段 → 认为逗号属于 URL 本身，整体保留
-            if (!preg_match('#^https?://#i', $part)) {
-                return array($line);
-            }
-            $parts[] = $part;
-        }
-
-        return count($parts) > 1 ? $parts : array($line);
-    }
-
-    /**
-     * 后台提供的额外订阅链接槽位（固定 2 行，与后台 UI 一一对应）
-     *
-     * ⚠️ 与 ConfigSave::RULES / Admin\ConfigController::fetch() 里的键名必须保持一致。
-     *    历史键 extra_subscribe_url（多行字符串）已弃用，仅用于后台回显迁移，
-     *    这里不再读取，避免旧值变成无法从后台清掉的「幽灵链接」。
-     *    ⚠️ 已从 5 槽收紧为 2 槽：extra_subscribe_url_3 ~ _5 不再被读取，
-     *       它们会留在 config/v2board.php 里但永远不生效（需手工迁移到 1/2）。
-     */
-    const URL_KEYS = array(
-        'extra_subscribe_url_1',
-        'extra_subscribe_url_2',
-    );
 
     /**
      * URL 合法性校验：仅允许 http / https（避免 file:// 等异常 scheme）

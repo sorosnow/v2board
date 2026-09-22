@@ -6074,24 +6074,14 @@
                     onChange: e=>this.set("subscribe", "extra_subscribe_enable", e ? 1 : 0)
                 })), r.extra_subscribe_enable ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
                     isChildren: !0,
-                    title: "额外订阅链接 1",
-                    description: "最多 2 条，留空则忽略。支持 base64/明文 URI 列表与 Clash/Mihomo YAML，仅允许 http/https；不支持的协议与 ss-2022 节点会被跳过。"
-                }, f.a.createElement("input", {
-                    type: "text",
+                    title: "额外订阅链接（一行一条）",
+                    description: "每行一条，用回车换行（不支持逗号分隔）。支持 base64/明文 URI 列表，仅允许 http/https；不支持的协议与 ss-2022 节点会被跳过。"
+                }, f.a.createElement("textarea", {
+                    rows: "5",
                     className: "form-control",
                     placeholder: "https://example.com/api/v1/client/subscribe?token=xxxx",
-                    defaultValue: r.extra_subscribe_url_1,
-                    onChange: e=>this.set("subscribe", "extra_subscribe_url_1", e.target.value)
-                })), f.a.createElement(m, {
-                    isChildren: !0,
-                    title: "额外订阅链接 2",
-                    description: "留空则忽略。"
-                }, f.a.createElement("input", {
-                    type: "text",
-                    className: "form-control",
-                    placeholder: "https://example.com/api/v1/client/subscribe?token=xxxx",
-                    defaultValue: r.extra_subscribe_url_2,
-                    onChange: e=>this.set("subscribe", "extra_subscribe_url_2", e.target.value)
+                    defaultValue: r.extra_subscribe_url,
+                    onChange: e=>this.set("subscribe", "extra_subscribe_url", e.target.value)
                 })), f.a.createElement(m, {
                     isChildren: !0,
                     title: "缓存时间（秒）",
