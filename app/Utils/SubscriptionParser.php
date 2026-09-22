@@ -5,20 +5,16 @@ namespace App\Utils;
 /**
  * 订阅内容解析器（附加订阅）
  *
- * 把「额外订阅链接」返回的内容（base64 编码或明文的 URI 列表）解析为
- * v2board 内部节点结构，以便复用现有 Protocol 渲染器一并下发。
+ * 把额外订阅链接返回的内容（base64 或明文 URI 列表）解析为内部节点结构，
+ * 复用现有 Protocol 渲染器一并下发。
  *
- * ⚠️ 关键设计：解析出的每个节点都带 `_credential` 字段。
- *    外部节点认证的是第三方自己的凭据（uuid/密码），**不能**被本站
- *    当前用户的 uuid 覆盖，否则节点必然连不上。
- *    渲染器侧会优先读取该字段（见各 Protocol 类）。
+ * 两个要点：
+ *  - 每个节点带 `_credential`（第三方自己的 uuid/密码），渲染器优先读它，
+ *    不能被本站当前用户 uuid 覆盖，否则节点必然连不上
+ *  - ss-2022 主动跳过：其 server key 需由 created_at 派生（Helper::getServerKey），
+ *    第三方节点的 created_at 不可知，下发只会产出连不上的节点
  *
- * ⚠️ ss-2022 节点会被主动跳过：其 server key 需由节点 created_at 派生
- *    （Helper::getServerKey），第三方节点的 created_at 无法获知，强行
- *    下发只会产出连不上的节点。
- *
- * 注意：本项目 composer.json 要求 php ^7.3.0 || ^8.0，
- *      禁用 PHP 7.4+ 语法（箭头函数 / 类型化属性 / ??= / 构造器属性提升）。
+ * 本项目要求 php ^7.3.0，禁用 7.4+ 语法（箭头函数 / 类型化属性 / ??= 等）。
  */
 class SubscriptionParser
 {
@@ -145,9 +141,8 @@ class SubscriptionParser
      * ------------------------------------------------------------------ */
 
     /**
-     * ss://
-     * 支持 SIP002（base64(method:password)@host:port?plugin=...#name）
-     * 与老式（base64(method:password@host:port)#name）
+     * ss://：SIP002（base64(method:password)@host:port?plugin=...#name）
+     * 与老式（base64(method:password@host:port)#name）均支持
      *
      * @param  string $uri
      * @return array|null
@@ -236,10 +231,8 @@ class SubscriptionParser
         }
 
         $tlsSettings = array(
-            // ⚠️ 必须同时写 snake_case 与 camelCase：
-            //    ClashMeta::buildVmess() 只认 serverName / allowInsecure（不读 snake_case），
-            //    只写 snake_case 会让标准订阅里的 vmess 节点在 Clash 输出中
-            //    丢掉 servername 与 skip-cert-verify（不报错，但节点会连不上）。
+            // 必须同时写 snake_case 与 camelCase：ClashMeta::buildVmess() 只认 camelCase，
+            // 只写 snake_case 会让 Clash 输出丢掉 servername / skip-cert-verify（不报错但连不上）。
             'server_name'    => isset($cfg['sni']) ? $cfg['sni'] : (isset($cfg['host']) ? $cfg['host'] : ''),
             'serverName'     => isset($cfg['sni']) ? $cfg['sni'] : (isset($cfg['host']) ? $cfg['host'] : ''),
             'allow_insecure' => isset($cfg['allowInsecure']) ? (int)$cfg['allowInsecure'] : 0,
@@ -300,12 +293,9 @@ class SubscriptionParser
             'allow_insecure' => isset($query['insecure']) ? self::bool01($query['insecure']) : 0,
             'fingerprint'    => isset($query['fp']) ? $query['fp'] : 'chrome',
         );
-        // ⚠️ reality（tls=2）时**必须无条件**写入这两个键：
-        //    ClashMeta / ClashVerge / ClashNyanpasu / Stash 的 buildVless 在 tls==2 时直接读
-        //    $tlsSettings['public_key'] / ['short_id']（无 ??），键不存在会
-        //    Undefined array key -> Laravel 转 ErrorException -> **整份订阅 500**。
-        //    而 reality 的 short-id 是**可选**的（URI 里可以没有 sid），
-        //    「无 sid」语义上就等价于「空字符串」，所以写 '' 才是正确的。
+        // reality（tls=2）必须无条件写这两个键：Clash 系 buildVless 在 tls==2 时直接读
+        // public_key / short_id（无 ??），缺键会 Undefined array key -> 整份订阅 500。
+        // short-id 本就可选（URI 里可以没有 sid），故写 '' 是正确的。
         if ($tls === 2) {
             $tlsSettings['public_key'] = isset($query['pbk']) ? $query['pbk'] : '';
             $tlsSettings['short_id'] = isset($query['sid']) ? $query['sid'] : '';
@@ -383,11 +373,10 @@ class SubscriptionParser
     }
 
     /**
-     * hysteria://  （v1）
-     * hysteria2:// / hy2:// （v2）
+     * hysteria://（v1）、hysteria2:// / hy2://（v2）
      *
-     * 两者统一映射为 type='hysteria' + version，与本站 ServerHysteria 模型一致，
-     * 这样 Surge / Loon（判断 version===2）与 Clash 系（buildHysteria）都能渲染。
+     * 统一映射为 type='hysteria' + version，与 ServerHysteria 一致，
+     * 这样 Surge / Loon（判断 version===2）与 Clash 系都能渲染。
      *
      * @param  string $uri
      * @return array|null
@@ -499,9 +488,7 @@ class SubscriptionParser
         $node['server_name'] = $sni;
         $node['insecure'] = $insecure;
         $node['disable_sni'] = isset($query['disable_sni']) ? self::bool01($query['disable_sni']) : 0;
-        // ⚠️ ClashMeta / ClashVerge / ClashNyanpasu 的 buildTuic 直接读
-        //    $server['zero_rtt_handshake']（无 ??），不写这个键就会
-        //    Undefined array key -> 整份订阅 500。
+        // Clash 系 buildTuic 直接读该键（无 ??），缺了会 Undefined array key -> 500
         $node['zero_rtt_handshake'] = isset($query['zero_rtt_handshake'])
             ? self::bool01($query['zero_rtt_handshake']) : 0;
         $node['udp_relay_mode'] = isset($query['udp_relay_mode']) ? $query['udp_relay_mode'] : 'native';
@@ -548,8 +535,7 @@ class SubscriptionParser
             'allow_insecure' => $insecure,
             'fingerprint'    => isset($query['fp']) ? $query['fp'] : 'chrome',
         );
-        // ⚠️ 同 parseVless：reality（tls=2）时必须无条件写入这两个键，
-        //    否则 Singbox 的 anytls 构建器在 tls==2 时读 short_id 会 500。
+        // 同 parseVless：reality 时必须写入，否则 Singbox 的 anytls 读 short_id 会 500
         if ($security === 'reality') {
             $tlsSettings['public_key'] = isset($query['pbk']) ? $query['pbk'] : '';
             $tlsSettings['short_id'] = isset($query['sid']) ? $query['sid'] : '';

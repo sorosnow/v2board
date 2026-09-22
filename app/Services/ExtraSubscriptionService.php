@@ -10,74 +10,43 @@ use Illuminate\Support\Facades\Log;
 /**
  * 额外订阅（附加节点）服务
  *
- * 用途：在后台配置一个「额外订阅链接」，把它里面的节点**追加**到本站
- * 下发的节点列表后面（与 custom_subscribe_url 的「替换」语义不同）。
+ * 把后台「额外订阅链接」里的节点追加到本站节点列表后面下发
+ * （custom_subscribe_url 是「替换」语义，两者不同）。
  *
- * 规则：
- *  - 支持**多条**链接：`extra_subscribe_url` 一行一条（**回车换行**，不支持逗号），
- *    每条**独立缓存**，一条挂掉不影响其他条
- *  - 缓存内容：**每条链接各自缓存「拉取并解析后的节点列表」**（不是原始响应体，
- *    也不是配置本身）：
- *      key   = `extra_subscribe_<md5(url)>`
- *      value = array('nodes' => [...解析后的节点...], 'skipped' => [...跳过统计...])
- *      TTL   = `extra_subscribe_cache_ttl`（默认 300，最小 30）
- *    另有一个防击穿占位锁 key：`extra_subscribe_<md5(url)>_fetching`（TTL 60）
- *  - 保存后台配置时会调 `forgetCache()` 主动清掉（见 ConfigController::save），
- *    所以改了链接 / TTL / 超时后**立即生效**，不用等 TTL 过期
- *  - 按节点名去重，**本站节点优先**（重名的附加节点不下发）
- *  - 附加节点保留其**自身凭据**（`_credential`），不会被本站用户 uuid 覆盖
- *  - 拉取失败 / 未配置 / 未开启 → **静默降级**，只下发本站节点
- *    （注意：不要像 custom_subscribe_url 那样失败就置空）
- *  - 附加订阅结果是带缓存的，避免高频拉取打爆第三方
- *  - ⚠️ 仅适用于「下发本站节点」的路径。若用户设了 custom_subscribe_url，
- *    走的是「替换」通道（原样透传第三方内容），**不得**调用本服务合并，
- *    否则异常用户仍能拿到可用的第三方节点。
+ * 要点：
+ *  - `extra_subscribe_url` 一行一条（回车换行，不支持逗号），每条独立缓存
+ *  - 缓存 key = `extra_subscribe_<md5(url)>`，值是解析后的节点列表，
+ *    TTL = `extra_subscribe_cache_ttl`（默认 300，最小 30）；
+ *    另有防击穿占位锁 `<同上>_fetching`（TTL 60）
+ *  - 保存后台配置会调 forgetCache()，故改链接 / TTL / 超时后立即生效
+ *  - 按节点名去重、本站优先；附加节点保留自身 `_credential`
+ *  - 拉取失败 / 未配置 / 未开启：静默降级，只下发本站节点
+ *  - 仅用于「下发本站节点」的路径；custom_subscribe_url 走「替换」通道，
+ *    不得调用本服务，否则异常用户仍能拿到可用的第三方节点
  *
- * 运行时防护：
- *  - P0-1 缓存击穿防护：TTL 过期瞬间用 Cache::add 原子占位，同一时刻只有
- *    一个请求真正去拉取；拿不到占位的请求本轮跳过该条，等下轮命中缓存。
- *    避免 N 个用户并发穿透把上游订阅打挂。
- *  - P0-2 并发拉取：多条 miss 链接用 Guzzle async **同时**发出，总耗时 ≈
- *    最慢一条（而非 条数 × 超时 串行累加）。
- *  - ⚠️ **禁止使用函数式 promise API**（`GuzzleHttp\Promise\settle()` / `all()` 等）：
- *    该 API 在 guzzlehttp/promises **2.0 已移除**（改为 `Utils::settle()`）。
- *    本项目 composer.json 只约束 `guzzlehttp/guzzle: ^7.4.3`，新装环境会解析到
- *    promises 2.x，调用旧函数会 `Call to undefined function` 直接 500。
- *    这里改为逐个 `$promise->wait()`（所有传输已在同一个 curl_multi 中，
- *    并发性不受影响），1.x / 2.x / 3.x 均可用。
- *  - ⚠️ **附加订阅的任何异常都不得影响主订阅**：`merge()` 兜住所有 Throwable，
- *    出错就原样返回本站节点。
- *  - （SSRF 内网段检查已按站长决策移除：URL 由唯一可信的管理员配置、
- *    服务器归站长所有，该场景下无实际威胁面；scheme 白名单保留。）
+ * 防护：Cache::add 原子占位防击穿；多条并发拉取（总耗时约最慢一条）；
+ *      不用函数式 promise API（promises 2.0 已移除 settle()/all()，而
+ *      guzzle ^7.4.3 新装会解析到 2.x），改为逐个 wait()；
+ *      merge() 兜住所有 Throwable，附加订阅任何异常都不影响主订阅。
+ *      内网段 SSRF 检查已按站长决策移除，scheme 白名单保留。
  *
- * 注意：本项目 composer.json 要求 php ^7.3.0 || ^8.0，禁用 PHP 7.4+ 语法。
+ * 本项目要求 php ^7.3.0，禁用 7.4+ 语法。
  */
 class ExtraSubscriptionService
 {
-    /**
-     * 缓存键前缀
-     */
+    /** 缓存键前缀 */
     const CACHE_KEY_PREFIX = 'extra_subscribe_';
 
-    /**
-     * 响应体大小上限（字节）
-     */
+    /** 响应体大小上限（字节） */
     const MAX_BODY_BYTES = 2097152; // 2MB
 
-    /**
-     * 缓存最短 TTL（秒）
-     */
+    /** 缓存最短 TTL（秒） */
     const MIN_CACHE_TTL = 30;
 
-    /**
-     * 拉取占位锁 TTL（秒）：覆盖「连接+读取+解析」的最坏耗时即可，
-     * 持有者完成后会主动释放（forget），残留过期仅作崩溃兜底
-     */
+    /** 拉取占位锁 TTL（秒）；持有者完成后主动释放，残留过期仅作崩溃兜底 */
     const FETCH_LOCK_TTL = 60;
 
-    /**
-     * 支持的附加订阅链接条数上限（防御性上限：超出部分丢弃并记 warning）
-     */
+    /** 链接条数上限（超出丢弃并记 warning） */
     const MAX_URLS = 10;
 
     /**
@@ -88,9 +57,7 @@ class ExtraSubscriptionService
      */
     public function merge(array $servers)
     {
-        // ⚠️ 附加订阅只是「附加」功能：任何问题都不允许影响本站节点的正常下发。
-        //    这里兜住所有 Throwable（含 PHP Error，例如依赖版本不兼容导致的
-        //    「Call to undefined function」），出错就原样返回本站节点。
+        // 附加订阅不允许影响本站节点下发：兜住所有 Throwable（含依赖不兼容的 PHP Error）
         try {
             $nodes = $this->fetchNodes();
         } catch (\Throwable $e) {
@@ -113,11 +80,11 @@ class ExtraSubscriptionService
         $added = array();
         foreach ($nodes as $node) {
             $name = isset($node['name']) ? (string)$node['name'] : '';
-            // 无名节点跳过（无法参与去重，也容易与其他无名节点混淆）
+            // 无名节点无法参与去重，跳过
             if ($name === '') {
                 continue;
             }
-            // 重名 → 跳过（本站优先）
+            // 重名跳过（本站优先）
             if (isset($used[$name])) {
                 continue;
             }
@@ -129,16 +96,15 @@ class ExtraSubscriptionService
             return $servers;
         }
 
-        // 附加节点永远排在后面
+        // 附加节点始终排在后面
         return array_merge($servers, $added);
     }
 
     /**
-     * 拉取并解析附加订阅节点（支持多条链接，各自独立缓存）
+     * 拉取并解析附加订阅节点（多条链接各自独立缓存）
      *
-     * 流程（两阶段）：
-     *   ① 逐条读缓存；miss 的链接先原子占位（P0-1），占位失败的链接本轮跳过
-     *   ② 所有 miss 链接**并发**拉取（P0-2），各自解析后写回缓存
+     * ① 逐条读缓存；miss 的先原子占位，占位失败的本轮跳过
+     * ② 所有 miss 并发拉取，各自解析后写回缓存
      *
      * @return array
      */
@@ -162,19 +128,17 @@ class ExtraSubscriptionService
         $misses = array(); // url => cacheKey
 
         foreach ($urls as $url) {
-            // 每条链接独立缓存：一条挂掉不影响其他条，也不会反复重试
+            // 每条独立缓存：一条挂掉不影响其他条
             $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
 
-            // 注意：不能用 Cache::remember —— 失败时缓存 null 会被当作 miss 反复重试
+            // 不能用 Cache::remember：失败时缓存 null 会被当成 miss 反复重试
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 $results[] = $cached;
                 continue;
             }
 
-            // P0-1 缓存击穿防护：Cache::add 是原子操作，同一时刻只有一个请求
-            // 能占位成功去真正拉取；其余请求本轮跳过该条（附加节点短暂缺席，
-            // 下一轮 TTL 内命中占位者写入的缓存），避免全站并发穿透打挂上游。
+            // 防击穿：Cache::add 原子占位，同一时刻只有一个请求真正去拉取
             if (Cache::add($cacheKey . '_fetching', 1, self::FETCH_LOCK_TTL)) {
                 $misses[$url] = $cacheKey;
             }
@@ -183,7 +147,7 @@ class ExtraSubscriptionService
         if ($misses) {
             $this->fetchConcurrent($misses, $ttl);
 
-            // 汇总本轮新写入的缓存（占位者含自身；失败也会写入空结果）
+            // 回读本轮写入的缓存（含失败写入的空结果）
             foreach ($misses as $url => $cacheKey) {
                 $cached = Cache::get($cacheKey);
                 if ($cached !== null) {
@@ -201,25 +165,20 @@ class ExtraSubscriptionService
             }
         }
 
-        // 多条之间的重名由 merge() 统一按名去重（先到先得）
+        // 跨链接重名交给 merge() 按名去重
         return $nodes;
     }
 
     /**
-     * 清掉「额外订阅」相关的缓存（保存后台配置后调用）
+     * 清掉额外订阅缓存（保存后台配置后调用）
      *
-     * 每清一条链接要清两个 key：
-     *  - 节点缓存 `extra_subscribe_<md5(url)>`
-     *  - 防击穿占位锁 `extra_subscribe_<md5(url)>_fetching`
+     * 每条链接要清两个 key：节点缓存 `extra_subscribe_<md5(url)>` 与
+     * 占位锁 `<同上>_fetching`。
      *
-     * 用法：ConfigController::save() 会把**旧链接**和**新链接**都传进来，
-     * 所以正常从后台改链接 / TTL / 超时，不会留下任何残留缓存。
-     *
-     * ⚠️ 局限：key 只能由 URL 反推（`md5(url)`），无法枚举。
-     *    若**绕过 save()** 改了配置（直接改 config 文件、tinker、恢复备份、
-     *    单独跑 config:cache 等），旧 URL 的条目没人删，就变成「孤儿」：
-     *    再也不会被读取（不会导致脏数据），只是白占一小块内存，
-     *    最多一个 TTL 后自然过期（单条约几十 KB，可忽略）。
+     * ConfigController::save() 会把旧、新链接都传进来，所以正常改链接 /
+     * TTL / 超时都不会留残留；只有绕过 save() 改配置（直接改 config 文件、
+     * tinker、恢复备份等）时旧 URL 的条目才成为「孤儿」——读不到、不影响
+     * 正确性，最多一个 TTL 后自然过期。
      *
      * @param  string|null $raw 多行链接配置；不传则读当前 config
      * @return int 清掉的链接条数
@@ -238,10 +197,9 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 并发拉取所有 miss 链接并写回各自缓存
+     * 并发拉取 miss 链接并写回各自缓存（总耗时约最慢一条）
      *
-     * P0-2：所有 miss 同时发出，总耗时 ≈ 最慢一条（而非 条数 × 超时）。
-     * 校验不通过的 URL 不发请求，直接按失败缓存（空结果）。
+     * 校验不通过的 URL 不发请求，直接按失败缓存空结果。
      *
      * @param array $misses url => cacheKey
      * @param int   $ttl
@@ -253,7 +211,7 @@ class ExtraSubscriptionService
         $empty = array('nodes' => array(), 'skipped' => array());
 
         foreach ($misses as $url => $cacheKey) {
-            // scheme 白名单校验（http/https only）；不通过不发请求，直接按失败缓存
+            // 仅允许 http/https；不通过则不请求，直接按失败缓存
             if (!$this->isUrlAllowed($url)) {
                 Cache::put($cacheKey, $empty, $ttl);
                 Cache::forget($cacheKey . '_fetching');
@@ -266,12 +224,9 @@ class ExtraSubscriptionService
             return;
         }
 
-        // ⚠️ 不要用 \GuzzleHttp\Promise\settle()：函数式 API 在 guzzlehttp/promises 2.0
-        //    已被移除（对应 Utils::settle），而 guzzle ^7.4.3 在新装环境会解析到 2.x，
-        //    会直接报「Call to undefined function」把订阅接口打挂 500。
-        //    逐个 wait()：所有请求在 getAsync() 时已进入同一个 curl_multi，
-        //    wait 任一 promise 都会推进全部传输，并发性不受影响；
-        //    1.x / 2.x / 3.x 均可用，且单条失败不影响其他条。
+        // 不用 \GuzzleHttp\Promise\settle()：函数式 API 在 promises 2.0 已移除，
+        // 而 guzzle ^7.4.3 新装会解析到 2.x，调用即 undefined function。
+        // 逐个 wait()：请求已在同一 curl_multi 中，并发性不受影响，单条失败不影响其他条。
         foreach ($promises as $url => $promise) {
             $cacheKey = $misses[$url];
 
@@ -283,33 +238,30 @@ class ExtraSubscriptionService
                     Cache::put($cacheKey, $empty, $ttl);
                 } else {
                     $parsed = SubscriptionParser::parse($body);
-                    // ⚠️ 无条件记录「拉到了几个节点」：
-                    //    成功但 0 节点时原先一行日志都没有，排查时完全是黑盒。
+                    // 无条件记录节点数：成功但 0 节点时也要有日志，否则排查是黑盒
                     Log::debug('extra subscribe: got ' . count($parsed['nodes']) . ' node(s), '
                         . strlen($body) . ' bytes, skipped=' . json_encode($parsed['skipped'])
                         . ' - ' . $this->maskUrl($url));
                     Cache::put($cacheKey, $parsed, $ttl);
                 }
             } catch (\Throwable $e) {
-                // ⚠️ Guzzle 会把完整 URL（含订阅 token）拼进异常消息，先替换成打码地址再落日志
+                // Guzzle 异常消息里带完整 URL（含 token），先打码再落日志
                 $message = str_replace($url, $this->maskUrl($url), $e->getMessage());
                 Log::warning('extra subscribe: fetch failed - ' . $message);
-                // 失败也写入缓存（空数组），避免持续打第三方
+                // 失败也写缓存（空结果），避免持续打第三方
                 Cache::put($cacheKey, $empty, $ttl);
             } finally {
-                // 主动释放占位：若拉取过程异常终止，也能让下一轮请求立即重试
+                // 主动释放占位，异常终止时下一轮可立即重试
                 Cache::forget($cacheKey . '_fetching');
             }
         }
     }
 
     /**
-     * 读取「额外订阅链接」配置，解析为去重后的链接数组
+     * 读取额外订阅链接配置，拆分为去重后的数组
      *
-     * 一行一条，**用回车换行**分隔（不支持逗号）。
-     * 历史槽位键 extra_subscribe_url_1/_2 不再读取，只在后台回显到输入框，
-     * 后台保存一次即完成迁移（避免旧值变成从后台清不掉的「幽灵链接」）。
-     * 这里只做拆分/去重/限流，合法性交给 isUrlAllowed() 校验并记日志。
+     * 一行一条（回车换行，不支持逗号）；只做拆分 / 去重 / 限流，
+     * 合法性交给 isUrlAllowed()。历史槽位键 _1/_2 不再读取。
      *
      * @param  string|null $raw 不传则读当前配置（传参用于清理旧配置的缓存）
      * @return array
@@ -345,7 +297,7 @@ class ExtraSubscriptionService
     }
 
     /**
-     * URL 合法性校验：仅允许 http / https（避免 file:// 等异常 scheme）
+     * URL 校验：仅允许 http / https
      *
      * @param  string $url
      * @return bool
@@ -372,7 +324,7 @@ class ExtraSubscriptionService
      */
     private function requestOptions()
     {
-        // P0-2：并发模式下总耗时 ≈ 最慢一条，单条超时默认 5s
+        // 并发模式下总耗时约最慢一条；单条超时默认 5s，夹紧到 [3, 60]
         $timeout = (int)config('v2board.extra_subscribe_timeout', 5);
         if ($timeout < 3) {
             $timeout = 3;
@@ -384,13 +336,9 @@ class ExtraSubscriptionService
         return array(
             'timeout'         => $timeout,
             'connect_timeout' => $timeout,
-            // ⚠️ **不要**加 'stream' => true：
-            //    stream 模式下 promise 在「收到响应头」就 resolve，而此时响应体仍在传输，
-            //    异步模式下数据只在事件循环 tick 时才写入流，readBody() 的 read() 会立刻
-            //    返回空串并提前 break -> 拿到空 body -> 解析出 0 节点 -> 空结果被缓存整个 TTL，
-            //    表现为「附加节点凭空消失」且无任何日志。
-            //    代价：响应体会先落到 php://temp（>2MB 转磁盘），MAX_BODY_BYTES 只能限
-            //    制「解析」而非「下载」；但拉取时长已被 timeout 兜住，可以接受。
+            // 不要加 'stream' => true：stream 模式下 promise 收到响应头就 resolve，
+            // 异步时 body 尚未写入流，readBody() 读到空串 -> 0 节点且空结果缓存整个 TTL
+            // （表现为节点凭空消失）。代价：响应体先落 php://temp，大小上限只作用于解析。
             'headers'         => array(
                 'User-Agent' => 'v2board-extra-subscribe/1.0',
                 'Accept'     => 'text/plain, */*',
@@ -414,7 +362,7 @@ class ExtraSubscriptionService
             }
             $body .= $chunk;
             if (strlen($body) > self::MAX_BODY_BYTES) {
-                // 日志由调用方带上打码地址输出
+                // 由调用方记录日志（带打码地址）
                 return null;
             }
         }
@@ -422,7 +370,7 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 给 URL 打码（只保留 scheme/host/port/path，丢掉 query，即订阅 token）
+     * 给 URL 打码：丢掉 query（即订阅 token）
      *
      * @param  string $url
      * @return string
