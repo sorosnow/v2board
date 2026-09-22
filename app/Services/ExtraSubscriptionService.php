@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
  * 下发的节点列表后面（与 custom_subscribe_url 的「替换」语义不同）。
  *
  * 规则：
- *  - 支持**多条**链接：`extra_subscribe_url` 一行一条（最多 `MAX_URLS` 条），
+ *  - 支持**多条**链接：`extra_subscribe_url` 一行一条（也可用逗号分隔，最多 `MAX_URLS` 条），
  *    每条**独立缓存**，一条挂掉不影响其他条
  *  - 按节点名去重，**本站节点优先**（重名的附加节点不下发）
  *  - 附加节点保留其**自身凭据**（`_credential`），不会被本站用户 uuid 覆盖
@@ -169,7 +169,11 @@ class ExtraSubscriptionService
     /**
      * 读取「额外订阅链接」配置，解析为去重后的链接数组
      *
-     * 支持多行（一行一条），同时兼容旧的单条写法（无换行）。
+     * 支持三种写法：
+     *  - 多行（一行一条，推荐）
+     *  - 一行内用**逗号**并列多条（兼容历史习惯，见 splitByComma）
+     *  - 旧的单条写法（无分隔符）
+     *
      * 这里只做拆分/去重/限流，合法性交给 request() 校验并记日志。
      *
      * @return array
@@ -186,11 +190,13 @@ class ExtraSubscriptionService
 
         $urls = array();
         foreach ($lines as $line) {
-            $line = trim((string)$line);
-            if ($line === '' || in_array($line, $urls, true)) {
-                continue;
+            foreach ($this->splitByComma($line) as $url) {
+                $url = trim((string)$url);
+                if ($url === '' || in_array($url, $urls, true)) {
+                    continue;
+                }
+                $urls[] = $url;
             }
-            $urls[] = $line;
         }
 
         if (count($urls) > self::MAX_URLS) {
@@ -200,6 +206,39 @@ class ExtraSubscriptionService
         }
 
         return $urls;
+    }
+
+    /**
+     * 拆分行内用逗号并列的多条链接
+     *
+     * ⚠️ 只有当按逗号拆开后**每一段**都以 http(s):// 开头时才拆，
+     *    否则原样返回。这样既能兼容「一行逗号并列多条」的习惯写法，
+     *    又不会误伤 query 里本来就含逗号的链接（如 ?flag=clash,yaml）。
+     *
+     * @param  string $line
+     * @return array
+     */
+    private function splitByComma($line)
+    {
+        $line = trim((string)$line);
+        if ($line === '' || strpos($line, ',') === false) {
+            return array($line);
+        }
+
+        $parts = array();
+        foreach (explode(',', $line) as $part) {
+            $part = trim($part);
+            if ($part === '') {
+                continue;
+            }
+            // 出现非链接片段 → 认为逗号属于 URL 本身，整体保留
+            if (!preg_match('#^https?://#i', $part)) {
+                return array($line);
+            }
+            $parts[] = $part;
+        }
+
+        return count($parts) > 1 ? $parts : array($line);
     }
 
     /**

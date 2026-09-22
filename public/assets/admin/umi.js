@@ -6075,7 +6075,7 @@
                 })), r.extra_subscribe_enable ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
                     isChildren: !0,
                     title: "额外订阅链接（一行一条，可多条）",
-                    description: "每行一条。支持 base64/明文 URI 列表与 Clash/Mihomo YAML，仅允许 http/https。多条会顺序拉取，最坏耗时约等于条数×超时。不支持的协议与 ss-2022 节点会被跳过。"
+                    description: "每行一条，也可用逗号分隔。支持 base64/明文 URI 列表与 Clash/Mihomo YAML，仅允许 http/https。多条会顺序拉取，最坏耗时约等于条数×超时。不支持的协议与 ss-2022 节点会被跳过。"
                 }, f.a.createElement("textarea", {
                     rows: "5",
                     className: "form-control",
