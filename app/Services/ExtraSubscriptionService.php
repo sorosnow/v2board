@@ -342,7 +342,7 @@ class ExtraSubscriptionService
      */
     private function requestOptions()
     {
-        // 并发模式下总耗时约最慢一条；单条超时默认 5s，夹紧到 [3, 60]
+        // 并发模式下总耗时约最慢一条；单条超时默认 5s，夹紧到 [3, 10]
         $timeout = (int)config('v2board.extra_subscribe_timeout', 5);
         if ($timeout < 3) {
             $timeout = 3;

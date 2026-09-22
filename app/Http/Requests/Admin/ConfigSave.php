@@ -60,7 +60,7 @@ class ConfigSave extends FormRequest
         'subscribe_limit_expire' => 'nullable|integer',
         // extra subscribe（附加订阅节点：把额外订阅的节点拼接在本站节点之后下发）
         'extra_subscribe_enable' => 'in:0,1',
-        // ⚠️ 多行字符串（一行一条链接），所以不能用 url 规则，改在 rules() 里逐行校验。
+        // 多行字符串（一行一条链接），所以不能用 url 规则，改在 rules() 里逐行校验。
         //    必须写成**数组**：rules() 会往这个键上追加闭包，
         //    若写成字符串会触发 Fatal error: [] operator not supported for strings
         'extra_subscribe_url' => [
