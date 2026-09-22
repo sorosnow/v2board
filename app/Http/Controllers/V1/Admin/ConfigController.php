@@ -233,7 +233,9 @@ class ConfigController extends Controller
         // 新旧链接的缓存都要清，否则改完还会命中旧结果，得等 TTL 过期才生效
         $extraSubscribe = new ExtraSubscriptionService();
         $extraSubscribe->forgetCache($oldExtraSubscribeUrl);
-        $extraSubscribe->forgetCache(isset($data['extra_subscribe_url']) ? $data['extra_subscribe_url'] : '');
+        // 注意用 $config（合并后的数组）：上面 $data 已被 var_export 覆盖成字符串，
+        // 对字符串做 isset($str['额外订阅键']) 恒为 false，这句会成为死代码
+        $extraSubscribe->forgetCache(isset($config['extra_subscribe_url']) ? $config['extra_subscribe_url'] : '');
         if(Cache::has('WEBMANPID')) {
             $pid = Cache::get('WEBMANPID');
             Cache::forget('WEBMANPID');
