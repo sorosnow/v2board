@@ -6134,12 +6134,12 @@
                     onChange: e=>this.set("subscribe", "extra_subscribe_cache_ttl", e.target.value)
                 })), f.a.createElement(m, {
                     isChildren: !0,
-                    title: "时间预算（秒）",
-                    description: "附加订阅整体最多占用多少秒（所有链接共用），避免第三方不可达时拖慢订阅接口、导致客户端「更新订阅失败」。建议 3~5，最大 10。"
+                    title: "请求超时（秒）",
+                    description: "拉取附加订阅的超时时间。建议 10。"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
-                    placeholder: "3",
+                    placeholder: "10",
                     defaultValue: r.extra_subscribe_timeout,
                     onChange: e=>this.set("subscribe", "extra_subscribe_timeout", e.target.value)
                 }))) : "")), f.a.createElement(s["a"].TabPane, {

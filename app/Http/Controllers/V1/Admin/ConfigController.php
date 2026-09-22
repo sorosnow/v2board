@@ -130,7 +130,7 @@ class ConfigController extends Controller
                 'extra_subscribe_url_4' => config('v2board.extra_subscribe_url_4'),
                 'extra_subscribe_url_5' => config('v2board.extra_subscribe_url_5'),
                 'extra_subscribe_cache_ttl' => (int)config('v2board.extra_subscribe_cache_ttl', 300),
-                'extra_subscribe_timeout' => (int)config('v2board.extra_subscribe_timeout', 3),
+                'extra_subscribe_timeout' => (int)config('v2board.extra_subscribe_timeout', 10),
             ],
             'frontend' => [
                 'frontend_theme' => config('v2board.frontend_theme', 'v2board'),
