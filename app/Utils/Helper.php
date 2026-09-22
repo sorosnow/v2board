@@ -211,7 +211,8 @@ class Helper
         $str = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode("{$cipher}:{$password}"));
         $add = self::formatHost($server['host']);
         $uri = "ss://{$str}@{$add}:{$server['port']}";
-        if ($server['obfs'] == 'http') {
+        // 附加订阅的 ss 节点没有 obfs 键时必须不读它（否则 Undefined array key -> 整份订阅 500）
+        if (isset($server['obfs']) && $server['obfs'] === 'http') {
             $uri .= "?plugin=obfs-local;obfs=http;obfs-host={$server['obfs-host']};path={$server['obfs-path']}";
         }
         return $uri."#{$name}\r\n";
