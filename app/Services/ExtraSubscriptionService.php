@@ -243,13 +243,15 @@ class ExtraSubscriptionService
                 $response = $promise->wait();
                 $body = $this->readBody($response->getBody());
                 if ($body === null) {
+                    Log::warning('extra subscribe: response too large - ' . $this->maskUrl($url));
                     Cache::put($cacheKey, $empty, $ttl);
                 } else {
                     $parsed = SubscriptionParser::parse($body);
-                    if (!empty($parsed['skipped'])) {
-                        // 用打码后的地址，避免把订阅 token 写进日志
-                        Log::debug('extra subscribe skipped: ' . $this->maskUrl($url), $parsed['skipped']);
-                    }
+                    // ⚠️ 无条件记录「拉到了几个节点」：
+                    //    成功但 0 节点时原先一行日志都没有，排查时完全是黑盒。
+                    Log::debug('extra subscribe: got ' . count($parsed['nodes']) . ' node(s), '
+                        . strlen($body) . ' bytes, skipped=' . json_encode($parsed['skipped'])
+                        . ' - ' . $this->maskUrl($url));
                     Cache::put($cacheKey, $parsed, $ttl);
                 }
             } catch (\Throwable $e) {
@@ -396,11 +398,13 @@ class ExtraSubscriptionService
         return array(
             'timeout'         => $timeout,
             'connect_timeout' => $timeout,
-            // ⚠️ 必须保留 stream：否则 Guzzle 会先把整个响应体收完再 resolve，
-            //    readBody() 的 MAX_BODY_BYTES 就只能限「解析」而不能限「下载」
-            //    （超大响应会先落到 php://temp / 磁盘）。
-            //    并发下 stream 也是安全的：promise 在收到响应头时即 resolve。
-            'stream'          => true,
+            // ⚠️ **不要**加 'stream' => true：
+            //    stream 模式下 promise 在「收到响应头」就 resolve，而此时响应体仍在传输，
+            //    异步模式下数据只在事件循环 tick 时才写入流，readBody() 的 read() 会立刻
+            //    返回空串并提前 break -> 拿到空 body -> 解析出 0 节点 -> 空结果被缓存整个 TTL，
+            //    表现为「附加节点凭空消失」且无任何日志。
+            //    代价：响应体会先落到 php://temp（>2MB 转磁盘），MAX_BODY_BYTES 只能限
+            //    制「解析」而非「下载」；但拉取时长已被 timeout 兜住，可以接受。
             'headers'         => array(
                 'User-Agent' => 'v2board-extra-subscribe/1.0',
                 'Accept'     => 'text/plain, */*',
@@ -424,7 +428,7 @@ class ExtraSubscriptionService
             }
             $body .= $chunk;
             if (strlen($body) > self::MAX_BODY_BYTES) {
-                Log::warning('extra subscribe: response too large');
+                // 日志由调用方带上打码地址输出
                 return null;
             }
         }
