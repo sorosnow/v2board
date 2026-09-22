@@ -5655,7 +5655,7 @@
                   , w = e.app
                   , x = e.testSendMailLoading
                   , _ = e.safe
-                  , E = this.props.plan.plans, extraUrlList = String(r.extra_subscribe_url || "").split(/\r\n|\r|\n/), extraUrlCount = extraUrlList.filter(v => v.trim() !== "").length;
+                  , E = this.props.plan.plans;
                 return f.a.createElement(d["a"], i()({}, this.props, {
                     title: "\u7cfb\u7edf\u914d\u7f6e"
                 }), f.a.createElement("div", {
@@ -6075,66 +6075,15 @@
                 })), r.extra_subscribe_enable ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
                     isChildren: !0,
                     title: "额外订阅链接（一行一条）",
-                    description: "一行一条（不支持逗号分隔），最多 10 条。仅允许 http(s):// 开头，支持 base64/明文 URI 列表，不支持的协议与 ss-2022 节点会被跳过。链接过长会自动省略显示，鼠标悬停可看完整地址；粘贴多行会自动拆成多条。"
-                }, f.a.createElement("div", null, extraUrlList.map((e, t) => f.a.createElement("div", {
-                    className: "input-group mb-2",
-                    key: t
-                }, f.a.createElement("input", {
-                    type: "text",
+                    description: "每行一条，用回车换行（不支持逗号分隔），最多 10 条。仅允许 http(s):// 开头；不支持的协议与 ss-2022 节点会被跳过。长链接不会折行，超出部分用横向滚动查看。"
+                }, f.a.createElement("textarea", {
+                    wrap: "off",
+                    rows: "5",
                     className: "form-control",
                     placeholder: "https://example.com/api/v1/client/subscribe?token=xxxx",
-                    style: {
-                        textOverflow: "ellipsis"
-                    },
-                    title: e,
-                    value: e,
-                    onChange: n => {
-                        var list = String(this.props.config.subscribe.extra_subscribe_url || "").split(/\r\n|\r|\n/);
-                        list[t] = n.target.value,
-                        this.set("subscribe", "extra_subscribe_url", list.join("\n"))
-                    }
-                    ,
-                    onPaste: n => {
-                        var d = n.clipboardData ? n.clipboardData.getData("text") : "";
-                        if (!/[\r\n]/.test(d))
-                            return;
-                        n.preventDefault();
-                        var list = String(this.props.config.subscribe.extra_subscribe_url || "").split(/\r\n|\r|\n/)
-                          , add = d.split(/\r\n|\r|\n/).map(v => v.trim()).filter(v => v)
-                          , room = 10 - list.filter(v => v.trim() !== "").length;
-                        add = add.slice(0, room > 0 ? room : 0),
-                        add.length && (list.splice.apply(list, [t, 1].concat(add)),
-                        this.set("subscribe", "extra_subscribe_url", list.join("\n")))
-                    }
-                }), f.a.createElement("div", {
-                    className: "input-group-append"
-                }, f.a.createElement("button", {
-                    type: "button",
-                    className: "btn btn-outline-danger",
-                    title: "删除这条链接",
-                    onClick: () => {
-                        var list = String(this.props.config.subscribe.extra_subscribe_url || "").split(/\r\n|\r|\n/);
-                        list.splice(t, 1),
-                        this.set("subscribe", "extra_subscribe_url", list.join("\n"))
-                    }
-                }, "删除")))), f.a.createElement("button", {
-                    type: "button",
-                    className: "btn btn-outline-light btn-sm",
-                    style: {
-                        marginTop: "6px"
-                    },
-                    disabled: extraUrlCount >= 10,
-                    onClick: () => {
-                        var list = String(this.props.config.subscribe.extra_subscribe_url || "").split(/\r\n|\r|\n/);
-                        list.filter(v => v.trim() !== "").length < 10 && (list.push(""),
-                        this.set("subscribe", "extra_subscribe_url", list.join("\n")))
-                    }
-                }, "＋ 添加一条链接"), f.a.createElement("span", {
-                    className: "text-muted",
-                    style: {
-                        marginLeft: "8px"
-                    }
-                }, extraUrlCount + " / 10"))), f.a.createElement(m, {
+                    defaultValue: r.extra_subscribe_url,
+                    onChange: e=>this.set("subscribe", "extra_subscribe_url", e.target.value)
+                })), f.a.createElement(m, {
                     isChildren: !0,
                     title: "缓存时间（秒）",
                     description: "附加订阅结果的缓存时长，避免高频拉取打爆第三方。建议 300。"
