@@ -6075,7 +6075,7 @@
                 })), r.extra_subscribe_enable ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
                     isChildren: !0,
                     title: "额外订阅链接 1",
-                    description: "最多 5 条，留空则忽略。支持 base64/明文 URI 列表与 Clash/Mihomo YAML，仅允许 http/https；不支持的协议与 ss-2022 节点会被跳过。"
+                    description: "最多 2 条，留空则忽略。支持 base64/明文 URI 列表与 Clash/Mihomo YAML，仅允许 http/https；不支持的协议与 ss-2022 节点会被跳过。"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
@@ -6092,36 +6092,6 @@
                     placeholder: "https://example.com/api/v1/client/subscribe?token=xxxx",
                     defaultValue: r.extra_subscribe_url_2,
                     onChange: e=>this.set("subscribe", "extra_subscribe_url_2", e.target.value)
-                })), f.a.createElement(m, {
-                    isChildren: !0,
-                    title: "额外订阅链接 3",
-                    description: "留空则忽略。"
-                }, f.a.createElement("input", {
-                    type: "text",
-                    className: "form-control",
-                    placeholder: "https://example.com/api/v1/client/subscribe?token=xxxx",
-                    defaultValue: r.extra_subscribe_url_3,
-                    onChange: e=>this.set("subscribe", "extra_subscribe_url_3", e.target.value)
-                })), f.a.createElement(m, {
-                    isChildren: !0,
-                    title: "额外订阅链接 4",
-                    description: "留空则忽略。"
-                }, f.a.createElement("input", {
-                    type: "text",
-                    className: "form-control",
-                    placeholder: "https://example.com/api/v1/client/subscribe?token=xxxx",
-                    defaultValue: r.extra_subscribe_url_4,
-                    onChange: e=>this.set("subscribe", "extra_subscribe_url_4", e.target.value)
-                })), f.a.createElement(m, {
-                    isChildren: !0,
-                    title: "额外订阅链接 5",
-                    description: "留空则忽略。"
-                }, f.a.createElement("input", {
-                    type: "text",
-                    className: "form-control",
-                    placeholder: "https://example.com/api/v1/client/subscribe?token=xxxx",
-                    defaultValue: r.extra_subscribe_url_5,
-                    onChange: e=>this.set("subscribe", "extra_subscribe_url_5", e.target.value)
                 })), f.a.createElement(m, {
                     isChildren: !0,
                     title: "缓存时间（秒）",

@@ -59,13 +59,10 @@ class ConfigSave extends FormRequest
         'subscribe_limit_expire' => 'nullable|integer',
         // extra subscribe（附加订阅节点：把额外订阅的节点拼接在本站节点之后下发）
         'extra_subscribe_enable' => 'in:0,1',
-        // 固定 5 个槽位，每槽一条单行 URL（本字段不追加闭包，所以可以用字符串写法）
+        // 固定 2 个槽位，每槽一条单行 URL（本字段不追加闭包，所以可以用字符串写法）
         // ⚠️ 键名必须与 ExtraSubscriptionService::URL_KEYS 一致
         'extra_subscribe_url_1' => 'nullable|url',
         'extra_subscribe_url_2' => 'nullable|url',
-        'extra_subscribe_url_3' => 'nullable|url',
-        'extra_subscribe_url_4' => 'nullable|url',
-        'extra_subscribe_url_5' => 'nullable|url',
         'extra_subscribe_cache_ttl' => 'nullable|integer',
         'extra_subscribe_timeout' => 'nullable|integer',
         // server

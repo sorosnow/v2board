@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
  * 下发的节点列表后面（与 custom_subscribe_url 的「替换」语义不同）。
  *
  * 规则：
- *  - 支持**多条**链接：后台提供 5 个固定槽位（`extra_subscribe_url_1` ~ `_5`），
+ *  - 支持**多条**链接：后台提供 2 个固定槽位（`extra_subscribe_url_1` ~ `_2`），
  *    每条**独立缓存**，一条挂掉不影响其他条
  *  - 按节点名去重，**本站节点优先**（重名的附加节点不下发）
  *  - 附加节点保留其**自身凭据**（`_credential`），不会被本站用户 uuid 覆盖
@@ -70,7 +70,9 @@ class ExtraSubscriptionService
     /**
      * 支持的附加订阅链接条数上限
      *
-     * ⚠️ 已改为并发拉取，总耗时 ≈ 最慢一条；上限仍不宜过大（并发连接数）。
+     * ⚠️ 这是**防御性上限**，不是后台槽位数（后台固定 2 个槽）。
+     *    只有单个槽里误粘贴了逗号/换行分隔的多条链接时才可能超过 2，
+     *    超过部分会被丢弃并记 warning。
      */
     const MAX_URLS = 10;
 
@@ -341,18 +343,17 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 后台提供的 5 个额外订阅链接槽位（固定 5 行，与后台 UI 一一对应）
+     * 后台提供的额外订阅链接槽位（固定 2 行，与后台 UI 一一对应）
      *
      * ⚠️ 与 ConfigSave::RULES / Admin\ConfigController::fetch() 里的键名必须保持一致。
      *    历史键 extra_subscribe_url（多行字符串）已弃用，仅用于后台回显迁移，
      *    这里不再读取，避免旧值变成无法从后台清掉的「幽灵链接」。
+     *    ⚠️ 已从 5 槽收紧为 2 槽：extra_subscribe_url_3 ~ _5 不再被读取，
+     *       它们会留在 config/v2board.php 里但永远不生效（需手工迁移到 1/2）。
      */
     const URL_KEYS = array(
         'extra_subscribe_url_1',
         'extra_subscribe_url_2',
-        'extra_subscribe_url_3',
-        'extra_subscribe_url_4',
-        'extra_subscribe_url_5',
     );
 
     /**
