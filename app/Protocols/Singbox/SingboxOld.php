@@ -198,8 +198,8 @@ class SingboxOld
                 if ($server['tls'] == 2) {
                     $tlsConfig['reality'] = [
                         'enabled' => true,
-                        'public_key' => $tlsSettings['public_key'],
-                        'short_id' => $tlsSettings['short_id']
+                        'public_key' => $tlsSettings['public_key'] ?? '',
+                        'short_id' => $tlsSettings['short_id'] ?? ''
                     ];
                 }
                 $fingerprints = $tlsSettings['fingerprint'] ?? 'chrome';

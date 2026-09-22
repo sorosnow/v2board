@@ -959,12 +959,16 @@ class SubscriptionParser
             $settings['fingerprint'] = (string)$p['client-fingerprint'];
         }
         if (!empty($p['reality-opts']) && is_array($p['reality-opts'])) {
-            if (!empty($p['reality-opts']['public-key'])) {
-                $settings['public_key'] = (string)$p['reality-opts']['public-key'];
-            }
-            if (!empty($p['reality-opts']['short-id'])) {
-                $settings['short_id'] = (string)$p['reality-opts']['short-id'];
-            }
+            // ⚠️ 必须**无条件**写入这两个键：
+            //    Clash*/Stash/Singbox 的 builder 在 tls=2 时直接读
+            //    $tlsSettings['public_key'] / ['short_id']（无 ??），键不存在会
+            //    Undefined array key -> Laravel 转 ErrorException -> 整份订阅 500。
+            //    reality 的 short-id 是**可选**的，公共订阅里「有 reality 但没填
+            //    short-id」很常见，一旦命中就是全端订阅报错。
+            $settings['public_key'] = isset($p['reality-opts']['public-key'])
+                ? (string)$p['reality-opts']['public-key'] : '';
+            $settings['short_id'] = isset($p['reality-opts']['short-id'])
+                ? (string)$p['reality-opts']['short-id'] : '';
         }
 
         return $settings;
