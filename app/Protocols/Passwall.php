@@ -21,7 +21,9 @@ class Passwall
         $uri = '';
 
         foreach ($this->servers as $server) {
-            $uri .= Helper::buildUri($this->user['uuid'], $server);
+            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
+            $uuid = isset($server['_credential']) && $server['_credential'] !== '' ? $server['_credential'] : $this->user['uuid'];
+            $uri .= Helper::buildUri($uuid, $server);
         }
         return base64_encode($uri);
     }

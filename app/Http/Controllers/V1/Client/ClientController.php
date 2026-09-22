@@ -8,6 +8,7 @@ use App\Protocols\General;
 use App\Protocols\Singbox\Singbox;
 use App\Protocols\Singbox\SingboxOld;
 use App\Protocols\ClashMeta;
+use App\Services\ExtraSubscriptionService;
 use App\Services\ServerService;
 use App\Services\TelegramService;
 use App\Services\UserService;
@@ -72,6 +73,10 @@ class ClientController extends Controller
             } else {
                 $servers = $serverService->getAvailableServers($user);
             }
+
+            // 合并「额外订阅」节点：按节点名去重（本站优先），拉取失败静默降级
+            $servers = (new ExtraSubscriptionService())->merge($servers);
+
             if($flag) {
                 if (!strpos($flag, 'sing')) {
                     $this->setSubscribeInfoToServers($servers, $user);

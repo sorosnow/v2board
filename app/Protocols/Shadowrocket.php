@@ -29,10 +29,12 @@ class Shadowrocket
         $uri .= "STATUS=🚀↑:{$upload}GB,↓:{$download}GB,TOT:{$totalTraffic}GB💡Expires:{$expiredDate}\r\n";
 
         foreach ($this->servers as $server) {
+            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
+            $user['uuid'] = isset($server['_credential']) && $server['_credential'] !== '' ? $server['_credential'] : $this->user['uuid'];
             if ($server['type'] === 'vmess' || ($server['type'] === 'v2node' && $server['protocol'] === 'vmess')) {
                 $uri .= self::buildVmess($user['uuid'], $server);
             } else {
-                $uri .= Helper::buildUri($this->user['uuid'], $server);
+                $uri .= Helper::buildUri($user['uuid'], $server);
             }
         }
         return base64_encode($uri);

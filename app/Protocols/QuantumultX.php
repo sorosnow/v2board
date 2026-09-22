@@ -30,6 +30,8 @@ class QuantumultX
         header("subscription-userinfo: upload={$upload}; download={$download}; total={$total}; expire={$expire}");
 
         foreach ($servers as $item) {
+            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
+            $uuid = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $user['uuid'];
             if (($item['type'] ?? null) === 'v2node' && isset($item['protocol'])) {
                 $item['type'] = $item['protocol'];
             }

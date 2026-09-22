@@ -6066,6 +6066,42 @@
                     placeholder: "\u8bf7\u8f93\u5165",
                     defaultValue: r.subscribe_limit_expire,
                     onChange: e=>this.set("subscribe", "subscribe_limit_expire", e.target.value)
+                }))) : "", f.a.createElement(m, {
+                    title: "附加订阅（节点拼接）",
+                    description: "开启后，额外订阅链接里的节点会追加在本站节点之后一并下发；按节点名去重，本站同名节点优先。"
+                }, f.a.createElement(l["a"], {
+                    checked: parseInt(r.extra_subscribe_enable),
+                    onChange: e=>this.set("subscribe", "extra_subscribe_enable", e ? 1 : 0)
+                })), r.extra_subscribe_enable ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
+                    isChildren: !0,
+                    title: "额外订阅链接",
+                    description: "支持 base64 编码或明文的 URI 列表，仅允许 http/https。不支持的协议与 ss-2022 节点会被跳过。"
+                }, f.a.createElement("input", {
+                    type: "text",
+                    className: "form-control",
+                    placeholder: "https://example.com/api/v1/client/subscribe?token=xxxx",
+                    defaultValue: r.extra_subscribe_url,
+                    onChange: e=>this.set("subscribe", "extra_subscribe_url", e.target.value)
+                })), f.a.createElement(m, {
+                    isChildren: !0,
+                    title: "缓存时间（秒）",
+                    description: "附加订阅结果的缓存时长，避免高频拉取打爆第三方。建议 300。"
+                }, f.a.createElement("input", {
+                    type: "text",
+                    className: "form-control",
+                    placeholder: "300",
+                    defaultValue: r.extra_subscribe_cache_ttl,
+                    onChange: e=>this.set("subscribe", "extra_subscribe_cache_ttl", e.target.value)
+                })), f.a.createElement(m, {
+                    isChildren: !0,
+                    title: "请求超时（秒）",
+                    description: "拉取附加订阅的超时时间。建议 10。"
+                }, f.a.createElement("input", {
+                    type: "text",
+                    className: "form-control",
+                    placeholder: "10",
+                    defaultValue: r.extra_subscribe_timeout,
+                    onChange: e=>this.set("subscribe", "extra_subscribe_timeout", e.target.value)
                 }))) : "")), f.a.createElement(s["a"].TabPane, {
                     tab: "\u5145\u503c",
                     key: "deposit"

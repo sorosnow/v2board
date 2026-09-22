@@ -29,6 +29,8 @@ class Shadowsocks
         $bytesRemaining = $user['transfer_enable'] - $bytesUsed;
 
         foreach ($servers as $item) {
+            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
+            $user['uuid'] = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $this->user['uuid'];
             if ($item['type'] === 'shadowsocks'
                 && in_array($item['cipher'], ['aes-128-gcm', 'aes-256-gcm', 'aes-192-gcm', 'chacha20-ietf-poly1305'])
             ) {

@@ -120,6 +120,10 @@ class ConfigController extends Controller
                 'subscribe_limit_enable' => (int)config('v2board.subscribe_limit_enable', 0),
                 'subscribe_limit_count' => (int)config('v2board.subscribe_limit_count', 60),
                 'subscribe_limit_expire' => (int)config('v2board.subscribe_limit_expire', 1),
+                'extra_subscribe_enable' => (int)config('v2board.extra_subscribe_enable', 0),
+                'extra_subscribe_url' => config('v2board.extra_subscribe_url'),
+                'extra_subscribe_cache_ttl' => (int)config('v2board.extra_subscribe_cache_ttl', 300),
+                'extra_subscribe_timeout' => (int)config('v2board.extra_subscribe_timeout', 10),
             ],
             'frontend' => [
                 'frontend_theme' => config('v2board.frontend_theme', 'v2board'),

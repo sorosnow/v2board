@@ -57,6 +57,11 @@ class ConfigSave extends FormRequest
         'subscribe_limit_enable' => 'in:0,1',
         'subscribe_limit_count' => 'nullable|integer',
         'subscribe_limit_expire' => 'nullable|integer',
+        // extra subscribe（附加订阅节点：把额外订阅的节点拼接在本站节点之后下发）
+        'extra_subscribe_enable' => 'in:0,1',
+        'extra_subscribe_url' => 'nullable|url',
+        'extra_subscribe_cache_ttl' => 'nullable|integer',
+        'extra_subscribe_timeout' => 'nullable|integer',
         // server
         'server_api_url' => 'nullable|string',
         'server_token' => 'nullable|min:16',

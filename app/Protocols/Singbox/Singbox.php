@@ -46,7 +46,12 @@ class Singbox
     {
         $proxies = [];
     
+        // 保存原始凭据：外部订阅节点会临时覆盖 $this->user['uuid']
+        $defaultUuid = $this->user['uuid'];
+
         foreach ($this->servers as $item) {
+            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
+            $this->user['uuid'] = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $defaultUuid;
             if ($item['type'] === 'v2node') {
                 $item['type'] = $item['protocol'];
             }
