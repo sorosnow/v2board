@@ -25,12 +25,20 @@ use Illuminate\Support\Facades\Log;
  *    走的是「替换」通道（原样透传第三方内容），**不得**调用本服务合并，
  *    否则异常用户仍能拿到可用的第三方节点。
  *
- * 运行时防护（审核修复）：
+ * 运行时防护：
  *  - P0-1 缓存击穿防护：TTL 过期瞬间用 Cache::add 原子占位，同一时刻只有
  *    一个请求真正去拉取；拿不到占位的请求本轮跳过该条，等下轮命中缓存。
  *    避免 N 个用户并发穿透把上游订阅打挂。
- *  - P0-2 并发拉取：多条 miss 链接用 Guzzle Promise **同时**发出，总耗时 ≈
- *    最慢一条（而非 条数 × 超时 串行累加）；单条超时默认从 10s 降为 5s。
+ *  - P0-2 并发拉取：多条 miss 链接用 Guzzle async **同时**发出，总耗时 ≈
+ *    最慢一条（而非 条数 × 超时 串行累加）。
+ *  - ⚠️ **禁止使用函数式 promise API**（`GuzzleHttp\Promise\settle()` / `all()` 等）：
+ *    该 API 在 guzzlehttp/promises **2.0 已移除**（改为 `Utils::settle()`）。
+ *    本项目 composer.json 只约束 `guzzlehttp/guzzle: ^7.4.3`，新装环境会解析到
+ *    promises 2.x，调用旧函数会 `Call to undefined function` 直接 500。
+ *    这里改为逐个 `$promise->wait()`（所有传输已在同一个 curl_multi 中，
+ *    并发性不受影响），1.x / 2.x / 3.x 均可用。
+ *  - ⚠️ **附加订阅的任何异常都不得影响主订阅**：`merge()` 兜住所有 Throwable，
+ *    出错就原样返回本站节点。
  *  - （SSRF 内网段检查已按站长决策移除：URL 由唯一可信的管理员配置、
  *    服务器归站长所有，该场景下无实际威胁面；scheme 白名单保留。）
  *
@@ -74,7 +82,16 @@ class ExtraSubscriptionService
      */
     public function merge(array $servers)
     {
-        $nodes = $this->fetchNodes();
+        // ⚠️ 附加订阅只是「附加」功能：任何问题都不允许影响本站节点的正常下发。
+        //    这里兜住所有 Throwable（含 PHP Error，例如依赖版本不兼容导致的
+        //    「Call to undefined function」），出错就原样返回本站节点。
+        try {
+            $nodes = $this->fetchNodes();
+        } catch (\Throwable $e) {
+            Log::warning('extra subscribe: merge failed - ' . $e->getMessage());
+            return $servers;
+        }
+
         if (!$nodes) {
             return $servers;
         }
@@ -211,23 +228,18 @@ class ExtraSubscriptionService
             return;
         }
 
-        // Guzzle 6/7 通用的函数式 settle（promises 2.x 中已 deprecated 但仍可用）
-        $settled = \GuzzleHttp\Promise\settle($promises)->wait();
-
-        foreach ($settled as $url => $outcome) {
+        // ⚠️ 不要用 \GuzzleHttp\Promise\settle()：函数式 API 在 guzzlehttp/promises 2.0
+        //    已被移除（对应 Utils::settle），而 guzzle ^7.4.3 在新装环境会解析到 2.x，
+        //    会直接报「Call to undefined function」把订阅接口打挂 500。
+        //    逐个 wait()：所有请求在 getAsync() 时已进入同一个 curl_multi，
+        //    wait 任一 promise 都会推进全部传输，并发性不受影响；
+        //    1.x / 2.x / 3.x 均可用，且单条失败不影响其他条。
+        foreach ($promises as $url => $promise) {
             $cacheKey = $misses[$url];
 
-            if ($outcome['state'] !== 'fulfilled') {
-                $reason = (isset($outcome['reason']) && $outcome['reason'] instanceof \Exception)
-                    ? $outcome['reason']->getMessage()
-                    : (isset($outcome['reason']) ? (string)$outcome['reason'] : 'unknown');
-                // ⚠️ Guzzle 会把完整 URL（含订阅 token）拼进异常消息，先替换成打码地址再落日志
-                $message = str_replace($url, $this->maskUrl($url), $reason);
-                Log::warning('extra subscribe: fetch failed - ' . $message);
-                // 失败也写入缓存（空数组），避免持续打第三方
-                Cache::put($cacheKey, $empty, $ttl);
-            } else {
-                $body = $this->readBody($outcome['value']->getBody());
+            try {
+                $response = $promise->wait();
+                $body = $this->readBody($response->getBody());
                 if ($body === null) {
                     Cache::put($cacheKey, $empty, $ttl);
                 } else {
@@ -238,10 +250,16 @@ class ExtraSubscriptionService
                     }
                     Cache::put($cacheKey, $parsed, $ttl);
                 }
+            } catch (\Throwable $e) {
+                // ⚠️ Guzzle 会把完整 URL（含订阅 token）拼进异常消息，先替换成打码地址再落日志
+                $message = str_replace($url, $this->maskUrl($url), $e->getMessage());
+                Log::warning('extra subscribe: fetch failed - ' . $message);
+                // 失败也写入缓存（空数组），避免持续打第三方
+                Cache::put($cacheKey, $empty, $ttl);
+            } finally {
+                // 主动释放占位：若拉取过程异常终止，也能让下一轮请求立即重试
+                Cache::forget($cacheKey . '_fetching');
             }
-
-            // 主动释放占位：若拉取过程异常终止，也能让下一轮请求立即重试
-            Cache::forget($cacheKey . '_fetching');
         }
     }
 
@@ -365,7 +383,7 @@ class ExtraSubscriptionService
      */
     private function requestOptions()
     {
-        // P0-2：单条超时默认从 10s 降为 5s（并发模式下 5 条链接总耗时 ≈ 5s 封顶）
+        // P0-2：并发模式下总耗时 ≈ 最慢一条，单条超时默认 5s
         $timeout = (int)config('v2board.extra_subscribe_timeout', 5);
         if ($timeout < 3) {
             $timeout = 3;
@@ -377,6 +395,11 @@ class ExtraSubscriptionService
         return array(
             'timeout'         => $timeout,
             'connect_timeout' => $timeout,
+            // ⚠️ 必须保留 stream：否则 Guzzle 会先把整个响应体收完再 resolve，
+            //    readBody() 的 MAX_BODY_BYTES 就只能限「解析」而不能限「下载」
+            //    （超大响应会先落到 php://temp / 磁盘）。
+            //    并发下 stream 也是安全的：promise 在收到响应头时即 resolve。
+            'stream'          => true,
             'headers'         => array(
                 'User-Agent' => 'v2board-extra-subscribe/1.0',
                 'Accept'     => 'text/plain, */*',

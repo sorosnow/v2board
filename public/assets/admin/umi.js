@@ -6135,11 +6135,11 @@
                 })), f.a.createElement(m, {
                     isChildren: !0,
                     title: "请求超时（秒）",
-                    description: "拉取附加订阅的超时时间。建议 10。"
+                    description: "单条链接的拉取超时。多条链接是并发拉取的，整体耗时约等于最慢的一条，而不是各条相加。建议 5。"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
-                    placeholder: "10",
+                    placeholder: "5",
                     defaultValue: r.extra_subscribe_timeout,
                     onChange: e=>this.set("subscribe", "extra_subscribe_timeout", e.target.value)
                 }))) : "")), f.a.createElement(s["a"].TabPane, {
