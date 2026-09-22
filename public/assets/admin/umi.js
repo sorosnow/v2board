@@ -6067,15 +6067,15 @@
                     defaultValue: r.subscribe_limit_expire,
                     onChange: e=>this.set("subscribe", "subscribe_limit_expire", e.target.value)
                 }))) : "", f.a.createElement(m, {
-                    title: "附加订阅（节点拼接）",
-                    description: "开启后，额外订阅链接里的节点会追加在本站节点之后一并下发；按节点名去重，本站同名节点优先。"
+                    title: "\u9644\u52a0\u8ba2\u9605\uff08\u8282\u70b9\u62fc\u63a5\uff09",
+                    description: "\u5f00\u542f\u540e\uff0c\u989d\u5916\u8ba2\u9605\u94fe\u63a5\u91cc\u7684\u8282\u70b9\u4f1a\u8ffd\u52a0\u5728\u672c\u7ad9\u8282\u70b9\u4e4b\u540e\u4e00\u5e76\u4e0b\u53d1\uff1b\u6309\u8282\u70b9\u540d\u53bb\u91cd\uff0c\u672c\u7ad9\u540c\u540d\u8282\u70b9\u4f18\u5148\u3002"
                 }, f.a.createElement(l["a"], {
                     checked: parseInt(r.extra_subscribe_enable),
                     onChange: e=>this.set("subscribe", "extra_subscribe_enable", e ? 1 : 0)
                 })), r.extra_subscribe_enable ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
                     isChildren: !0,
-                    title: "额外订阅链接（一行一条）",
-                    description: "每行一条，用回车换行（不支持逗号分隔），超出部分用横向滚动查看。"
+                    title: "\u989d\u5916\u8ba2\u9605\u94fe\u63a5\uff08\u4e00\u884c\u4e00\u6761\uff09",
+                    description: "\u6bcf\u884c\u4e00\u6761\uff0c\u7528\u56de\u8f66\u6362\u884c\uff08\u4e0d\u652f\u6301\u9017\u53f7\u5206\u9694\uff09\uff0c\u8d85\u51fa\u90e8\u5206\u7528\u6a2a\u5411\u6eda\u52a8\u67e5\u770b\u3002"
                 }, f.a.createElement("textarea", {
                     wrap: "off",
                     rows: "5",
@@ -6085,8 +6085,8 @@
                     onChange: e=>this.set("subscribe", "extra_subscribe_url", e.target.value)
                 })), f.a.createElement(m, {
                     isChildren: !0,
-                    title: "缓存时间（秒）",
-                    description: "附加订阅结果的缓存时长，避免高频拉取打爆第三方。"
+                    title: "\u7f13\u5b58\u65f6\u95f4\uff08\u79d2\uff09",
+                    description: "\u9644\u52a0\u8ba2\u9605\u7ed3\u679c\u7684\u7f13\u5b58\u65f6\u957f\uff0c\u907f\u514d\u9ad8\u9891\u62c9\u53d6\u6253\u7206\u7b2c\u4e09\u65b9\u3002"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
@@ -6095,8 +6095,8 @@
                     onChange: e=>this.set("subscribe", "extra_subscribe_cache_ttl", e.target.value)
                 })), f.a.createElement(m, {
                     isChildren: !0,
-                    title: "请求超时（秒）",
-                    description: "多条链接是并发拉取的，整体耗时约等于最慢的一条，而不是各条相加。"
+                    title: "\u8bf7\u6c42\u8d85\u65f6\uff08\u79d2\uff09",
+                    description: "\u591a\u6761\u94fe\u63a5\u662f\u5e76\u53d1\u62c9\u53d6\u7684\uff0c\u6574\u4f53\u8017\u65f6\u7ea6\u7b49\u4e8e\u6700\u6162\u7684\u4e00\u6761\uff0c\u800c\u4e0d\u662f\u5404\u6761\u76f8\u52a0\u3002"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
