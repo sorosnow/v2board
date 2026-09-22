@@ -25,6 +25,15 @@ use Illuminate\Support\Facades\Log;
  *    走的是「替换」通道（原样透传第三方内容），**不得**调用本服务合并，
  *    否则异常用户仍能拿到可用的第三方节点。
  *
+ * 运行时防护（审核修复）：
+ *  - P0-1 缓存击穿防护：TTL 过期瞬间用 Cache::add 原子占位，同一时刻只有
+ *    一个请求真正去拉取；拿不到占位的请求本轮跳过该条，等下轮命中缓存。
+ *    避免 N 个用户并发穿透把上游订阅打挂。
+ *  - P0-2 并发拉取：多条 miss 链接用 Guzzle Promise **同时**发出，总耗时 ≈
+ *    最慢一条（而非 条数 × 超时 串行累加）；单条超时默认从 10s 降为 5s。
+ *  - （SSRF 内网段检查已按站长决策移除：URL 由唯一可信的管理员配置、
+ *    服务器归站长所有，该场景下无实际威胁面；scheme 白名单保留。）
+ *
  * 注意：本项目 composer.json 要求 php ^7.3.0 || ^8.0，禁用 PHP 7.4+ 语法。
  */
 class ExtraSubscriptionService
@@ -45,10 +54,15 @@ class ExtraSubscriptionService
     const MIN_CACHE_TTL = 30;
 
     /**
+     * 拉取占位锁 TTL（秒）：覆盖「连接+读取+解析」的最坏耗时即可，
+     * 持有者完成后会主动释放（forget），残留过期仅作崩溃兜底
+     */
+    const FETCH_LOCK_TTL = 60;
+
+    /**
      * 支持的附加订阅链接条数上限
      *
-     * ⚠️ 多条链接是**顺序**拉取的，最坏耗时 ≈ 条数 × 超时，
-     *    所以上限不能太大，否则首次拉取会把订阅请求拖死。
+     * ⚠️ 已改为并发拉取，总耗时 ≈ 最慢一条；上限仍不宜过大（并发连接数）。
      */
     const MAX_URLS = 10;
 
@@ -99,6 +113,10 @@ class ExtraSubscriptionService
     /**
      * 拉取并解析附加订阅节点（支持多条链接，各自独立缓存）
      *
+     * 流程（两阶段）：
+     *   ① 逐条读缓存；miss 的链接先原子占位（P0-1），占位失败的链接本轮跳过
+     *   ② 所有 miss 链接**并发**拉取（P0-2），各自解析后写回缓存
+     *
      * @return array
      */
     public function fetchNodes()
@@ -117,18 +135,42 @@ class ExtraSubscriptionService
             $ttl = self::MIN_CACHE_TTL;
         }
 
-        $nodes = array();
+        $results = array();
+        $misses = array(); // url => cacheKey
+
         foreach ($urls as $url) {
             // 每条链接独立缓存：一条挂掉不影响其他条，也不会反复重试
             $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
 
             // 注意：不能用 Cache::remember —— 失败时缓存 null 会被当作 miss 反复重试
             $cached = Cache::get($cacheKey);
-            if ($cached === null) {
-                $cached = $this->fetchOne($url);
-                Cache::put($cacheKey, $cached, $ttl);
+            if ($cached !== null) {
+                $results[] = $cached;
+                continue;
             }
 
+            // P0-1 缓存击穿防护：Cache::add 是原子操作，同一时刻只有一个请求
+            // 能占位成功去真正拉取；其余请求本轮跳过该条（附加节点短暂缺席，
+            // 下一轮 TTL 内命中占位者写入的缓存），避免全站并发穿透打挂上游。
+            if (Cache::add($cacheKey . '_fetching', 1, self::FETCH_LOCK_TTL)) {
+                $misses[$url] = $cacheKey;
+            }
+        }
+
+        if ($misses) {
+            $this->fetchConcurrent($misses, $ttl);
+
+            // 汇总本轮新写入的缓存（占位者含自身；失败也会写入空结果）
+            foreach ($misses as $url => $cacheKey) {
+                $cached = Cache::get($cacheKey);
+                if ($cached !== null) {
+                    $results[] = $cached;
+                }
+            }
+        }
+
+        $nodes = array();
+        foreach ($results as $cached) {
             if (!empty($cached['nodes'])) {
                 foreach ($cached['nodes'] as $node) {
                     $nodes[] = $node;
@@ -141,36 +183,73 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 拉取并解析**单条**附加订阅链接
+     * 并发拉取所有 miss 链接并写回各自缓存
      *
-     * @param  string $url
-     * @return array ['nodes' => [], 'skipped' => []]
+     * P0-2：所有 miss 同时发出，总耗时 ≈ 最慢一条（而非 条数 × 超时）。
+     * 校验不通过的 URL 不发请求，直接按失败缓存（空结果）。
+     *
+     * @param array $misses url => cacheKey
+     * @param int   $ttl
      */
-    private function fetchOne($url)
+    private function fetchConcurrent(array $misses, $ttl)
     {
-        $body = $this->request($url);
-        if ($body === null) {
-            // 失败也写入缓存（空数组），避免持续打第三方
-            return array('nodes' => array(), 'skipped' => array());
+        $client = new Client();
+        $promises = array();
+        $empty = array('nodes' => array(), 'skipped' => array());
+
+        foreach ($misses as $url => $cacheKey) {
+            // scheme 白名单校验（http/https only）；不通过不发请求，直接按失败缓存
+            if (!$this->isUrlAllowed($url)) {
+                Cache::put($cacheKey, $empty, $ttl);
+                Cache::forget($cacheKey . '_fetching');
+                continue;
+            }
+            $promises[$url] = $client->getAsync($url, $this->requestOptions());
         }
 
-        $parsed = SubscriptionParser::parse($body);
-        if (!empty($parsed['skipped'])) {
-            // 用打码后的地址，避免把订阅 token 写进日志
-            Log::debug('extra subscribe skipped: ' . $this->maskUrl($url), $parsed['skipped']);
+        if (!$promises) {
+            return;
         }
 
-        return array(
-            'nodes'   => $parsed['nodes'],
-            'skipped' => $parsed['skipped'],
-        );
+        // Guzzle 6/7 通用的函数式 settle（promises 2.x 中已 deprecated 但仍可用）
+        $settled = \GuzzleHttp\Promise\settle($promises)->wait();
+
+        foreach ($settled as $url => $outcome) {
+            $cacheKey = $misses[$url];
+
+            if ($outcome['state'] !== 'fulfilled') {
+                $reason = (isset($outcome['reason']) && $outcome['reason'] instanceof \Exception)
+                    ? $outcome['reason']->getMessage()
+                    : (isset($outcome['reason']) ? (string)$outcome['reason'] : 'unknown');
+                // ⚠️ Guzzle 会把完整 URL（含订阅 token）拼进异常消息，先替换成打码地址再落日志
+                $message = str_replace($url, $this->maskUrl($url), $reason);
+                Log::warning('extra subscribe: fetch failed - ' . $message);
+                // 失败也写入缓存（空数组），避免持续打第三方
+                Cache::put($cacheKey, $empty, $ttl);
+            } else {
+                $body = $this->readBody($outcome['value']->getBody());
+                if ($body === null) {
+                    Cache::put($cacheKey, $empty, $ttl);
+                } else {
+                    $parsed = SubscriptionParser::parse($body);
+                    if (!empty($parsed['skipped'])) {
+                        // 用打码后的地址，避免把订阅 token 写进日志
+                        Log::debug('extra subscribe skipped: ' . $this->maskUrl($url), $parsed['skipped']);
+                    }
+                    Cache::put($cacheKey, $parsed, $ttl);
+                }
+            }
+
+            // 主动释放占位：若拉取过程异常终止，也能让下一轮请求立即重试
+            Cache::forget($cacheKey . '_fetching');
+        }
     }
 
     /**
      * 读取「额外订阅链接」配置（固定 5 个槽位），解析为去重后的链接数组
      *
      * 兼容旧写法：槽位里若误粘贴了多行或逗号分隔的内容，也会被拆开（幂等）。
-     * 这里只做拆分/去重/限流，合法性交给 request() 校验并记日志。
+     * 这里只做拆分/去重/限流，合法性交给 isUrlAllowed() 校验并记日志。
      *
      * @return array
      */
@@ -259,6 +338,76 @@ class ExtraSubscriptionService
     );
 
     /**
+     * URL 合法性校验：仅允许 http / https（避免 file:// 等异常 scheme）
+     *
+     * @param  string $url
+     * @return bool
+     */
+    private function isUrlAllowed($url)
+    {
+        $parts = parse_url($url);
+        if (!$parts || empty($parts['scheme']) || empty($parts['host'])) {
+            Log::warning('extra subscribe: invalid url');
+            return false;
+        }
+        if (!in_array(strtolower($parts['scheme']), array('http', 'https'), true)) {
+            Log::warning('extra subscribe: scheme not allowed');
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * 构造请求选项
+     *
+     * @return array
+     */
+    private function requestOptions()
+    {
+        // P0-2：单条超时默认从 10s 降为 5s（并发模式下 5 条链接总耗时 ≈ 5s 封顶）
+        $timeout = (int)config('v2board.extra_subscribe_timeout', 5);
+        if ($timeout < 3) {
+            $timeout = 3;
+        }
+        if ($timeout > 60) {
+            $timeout = 60;
+        }
+
+        return array(
+            'timeout'         => $timeout,
+            'connect_timeout' => $timeout,
+            'headers'         => array(
+                'User-Agent' => 'v2board-extra-subscribe/1.0',
+                'Accept'     => 'text/plain, */*',
+            ),
+        );
+    }
+
+    /**
+     * 流式读取响应体并限制大小（避免大文件打爆内存）
+     *
+     * @param  \Psr\Http\Message\StreamInterface $stream
+     * @return string|null 超限时返回 null
+     */
+    private function readBody($stream)
+    {
+        $body = '';
+        while (!$stream->eof()) {
+            $chunk = $stream->read(8192);
+            if ($chunk === '') {
+                break;
+            }
+            $body .= $chunk;
+            if (strlen($body) > self::MAX_BODY_BYTES) {
+                Log::warning('extra subscribe: response too large');
+                return null;
+            }
+        }
+        return $body;
+    }
+
+    /**
      * 给 URL 打码（只保留 scheme/host/port/path，丢掉 query，即订阅 token）
      *
      * @param  string $url
@@ -280,67 +429,5 @@ class ExtraSubscriptionService
         }
 
         return $masked;
-    }
-
-    /**
-     * 请求附加订阅地址
-     *
-     * @param  string $url
-     * @return string|null 失败返回 null
-     */
-    private function request($url)
-    {
-        // 仅允许 http / https，避免 file:// 等异常 scheme
-        $parts = parse_url($url);
-        if (!$parts || empty($parts['scheme']) || empty($parts['host'])) {
-            Log::warning('extra subscribe: invalid url');
-            return null;
-        }
-        if (!in_array(strtolower($parts['scheme']), array('http', 'https'), true)) {
-            Log::warning('extra subscribe: scheme not allowed');
-            return null;
-        }
-
-        $timeout = (int)config('v2board.extra_subscribe_timeout', 10);
-        if ($timeout < 3) {
-            $timeout = 3;
-        }
-        if ($timeout > 60) {
-            $timeout = 60;
-        }
-
-        try {
-            $client = new Client();
-            $response = $client->get($url, array(
-                'timeout'         => $timeout,
-                'connect_timeout' => $timeout,
-                'stream'          => true,
-                'headers'         => array(
-                    'User-Agent' => 'v2board-extra-subscribe/1.0',
-                    'Accept'     => 'text/plain, */*',
-                ),
-            ));
-
-            // 流式读取并限制大小，避免大文件打爆内存
-            $stream = $response->getBody();
-            $body = '';
-            while (!$stream->eof()) {
-                $chunk = $stream->read(8192);
-                if ($chunk === '') {
-                    break;
-                }
-                $body .= $chunk;
-                if (strlen($body) > self::MAX_BODY_BYTES) {
-                    Log::warning('extra subscribe: response too large');
-                    return null;
-                }
-            }
-            return $body;
-        } catch (\Exception $e) {
-            // ⚠️ Guzzle 会把完整 URL（含订阅 token）拼进异常消息，先替换成打码地址再落日志
-            $message = str_replace($url, $this->maskUrl($url), $e->getMessage());
-            Log::warning('extra subscribe: fetch failed - ' . $message);
-            return null;
-        }
     }
 }
