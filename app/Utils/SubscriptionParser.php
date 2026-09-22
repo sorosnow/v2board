@@ -600,7 +600,8 @@ class SubscriptionParser
     {
         try {
             $data = Yaml::parse($raw);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            // 兜住 Throwable：坏 YAML 只能是「解析失败」，绝不能把异常抛到订阅请求里
             self::skip('clash_yaml_parse_failed');
             return array('nodes' => array(), 'skipped' => self::$skipped);
         }

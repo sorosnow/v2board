@@ -16,6 +16,9 @@ use Illuminate\Support\Facades\Log;
  * 规则：
  *  - 支持**多条**链接：`extra_subscribe_url` 一行一条（也可用逗号分隔，最多 `MAX_URLS` 条），
  *    每条**独立缓存**，一条挂掉不影响其他条
+ *  - ⚠️ 拉取是**同步**的（在订阅请求内），所以有「总时间预算」（`extra_subscribe_timeout`，
+ *    默认 3 秒，上限 10 秒）兜底：预算耗尽后剩下的链接跳过、留到下次请求再拉
+ *  - ⚠️ **任何异常都不得影响主订阅**：`merge()` 兜住所有 Throwable，出错就原样返回本站节点
  *  - 按节点名去重，**本站节点优先**（重名的附加节点不下发）
  *  - 附加节点保留其**自身凭据**（`_credential`），不会被本站用户 uuid 覆盖
  *  - 拉取失败 / 未配置 / 未开启 → **静默降级**，只下发本站节点
@@ -47,10 +50,28 @@ class ExtraSubscriptionService
     /**
      * 支持的附加订阅链接条数上限
      *
-     * ⚠️ 多条链接是**顺序**拉取的，最坏耗时 ≈ 条数 × 超时，
-     *    所以上限不能太大，否则首次拉取会把订阅请求拖死。
+     * 总耗时由 MIN/MAX_TIMEOUT 的「总预算」兜住，不是条数 × 超时。
      */
     const MAX_URLS = 10;
+
+    /**
+     * 附加订阅阶段的默认时间预算（秒），可用 extra_subscribe_timeout 覆盖
+     */
+    const DEFAULT_TIMEOUT = 3;
+
+    /**
+     * 时间预算下限（秒）
+     */
+    const MIN_TIMEOUT = 2;
+
+    /**
+     * 时间预算上限（秒）
+     *
+     * ⚠️ 附加订阅是**在订阅请求内同步拉取**的，耗时直接叠加到订阅接口的响应时间上。
+     *    第三方不可达时若没有这个上限，订阅请求会被拖到客户端超时
+     *    （客户端表现为「更新订阅失败」，但本站节点其实是好的）。
+     */
+    const MAX_TIMEOUT = 10;
 
     /**
      * 把「额外订阅」的节点合并进本站节点列表
@@ -60,7 +81,15 @@ class ExtraSubscriptionService
      */
     public function merge(array $servers)
     {
-        $nodes = $this->fetchNodes();
+        // ⚠️ 附加订阅只是「附加」功能：任何问题都不允许影响本站节点的正常下发。
+        //    这里兜住所有 Throwable（含 PHP Error / 缓存异常），出错就原样返回本站节点。
+        try {
+            $nodes = $this->fetchNodes();
+        } catch (\Throwable $e) {
+            Log::warning('extra subscribe: merge failed - ' . $e->getMessage());
+            return $servers;
+        }
+
         if (!$nodes) {
             return $servers;
         }
@@ -99,6 +128,10 @@ class ExtraSubscriptionService
     /**
      * 拉取并解析附加订阅节点（支持多条链接，各自独立缓存）
      *
+     * ⚠️ 本方法会**同步**发起 HTTP 请求，耗时直接叠加到订阅接口上。
+     *    因此有「总时间预算」兜底：预算耗尽后剩下的链接直接跳过，
+     *    留到下次请求再拉（每条链接各自有缓存，会逐步收敛，不会一直饿死）。
+     *
      * @return array
      */
     public function fetchNodes()
@@ -117,16 +150,16 @@ class ExtraSubscriptionService
             $ttl = self::MIN_CACHE_TTL;
         }
 
+        $deadline = microtime(true) + $this->budget();
+
         $nodes = array();
         foreach ($urls as $url) {
-            // 每条链接独立缓存：一条挂掉不影响其他条，也不会反复重试
-            $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
-
-            // 注意：不能用 Cache::remember —— 失败时缓存 null 会被当作 miss 反复重试
-            $cached = Cache::get($cacheKey);
-            if ($cached === null) {
-                $cached = $this->fetchOne($url);
-                Cache::put($cacheKey, $cached, $ttl);
+            // 单条链接的任何问题（网络/解析/缓存）都不得影响其他链接
+            try {
+                $cached = $this->resolve($url, $deadline, $ttl);
+            } catch (\Throwable $e) {
+                Log::warning('extra subscribe: ' . $e->getMessage());
+                continue;
             }
 
             if (!empty($cached['nodes'])) {
@@ -141,14 +174,65 @@ class ExtraSubscriptionService
     }
 
     /**
+     * 取单条链接的缓存；缓存过期时在剩余预算内同步拉取
+     *
+     * @param  string $url
+     * @param  float  $deadline
+     * @param  int    $ttl
+     * @return array
+     */
+    private function resolve($url, $deadline, $ttl)
+    {
+        // 每条链接独立缓存：一条挂掉不影响其他条，也不会反复重试
+        $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
+
+        // 注意：不能用 Cache::remember —— 失败时缓存 null 会被当作 miss 反复重试
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) {
+            return $cached;
+        }
+
+        $remaining = $deadline - microtime(true);
+        if ($remaining <= 0) {
+            // 预算已用完：**不写缓存**，留到下次请求再拉
+            Log::debug('extra subscribe: budget exhausted, deferred - ' . $this->maskUrl($url));
+            return array('nodes' => array(), 'skipped' => array());
+        }
+
+        $cached = $this->fetchOne($url, $remaining);
+        Cache::put($cacheKey, $cached, $ttl);
+
+        return $cached;
+    }
+
+    /**
+     * 附加订阅阶段的总时间预算（秒）
+     *
+     * @return float
+     */
+    private function budget()
+    {
+        $budget = (int)config('v2board.extra_subscribe_timeout', self::DEFAULT_TIMEOUT);
+        if ($budget < self::MIN_TIMEOUT) {
+            $budget = self::MIN_TIMEOUT;
+        }
+        if ($budget > self::MAX_TIMEOUT) {
+            $budget = self::MAX_TIMEOUT;
+        }
+
+        return (float)$budget;
+    }
+
+    /**
      * 拉取并解析**单条**附加订阅链接
      *
      * @param  string $url
+     * @param  float  $budget 本条可用的剩余时间（秒）
      * @return array ['nodes' => [], 'skipped' => []]
      */
-    private function fetchOne($url)
+    private function fetchOne($url, $budget)
     {
-        $body = $this->request($url);
+        $body = $this->request($url, $budget);
         if ($body === null) {
             // 失败也写入缓存（空数组），避免持续打第三方
             return array('nodes' => array(), 'skipped' => array());
@@ -269,9 +353,10 @@ class ExtraSubscriptionService
      * 请求附加订阅地址
      *
      * @param  string $url
+     * @param  float  $budget 本条可用的剩余时间（秒）
      * @return string|null 失败返回 null
      */
-    private function request($url)
+    private function request($url, $budget)
     {
         // 仅允许 http / https，避免 file:// 等异常 scheme
         $parts = parse_url($url);
@@ -284,19 +369,23 @@ class ExtraSubscriptionService
             return null;
         }
 
-        $timeout = (int)config('v2board.extra_subscribe_timeout', 10);
-        if ($timeout < 3) {
-            $timeout = 3;
+        // 单条超时不得超出剩余预算，避免一条慢链接吃光整个订阅请求的时间。
+        // ⚠️ 必须用 ceil 而不是 floor：$budget 是「deadline - microtime()」算出来的浮点数，
+        //    几乎总是略小于整数（如 1.9999），floor 会白白丢掉整整一秒，
+        //    导致预算被浪费、且后续链接该跳过时却被放行。
+        $timeout = (int)min($this->budget(), ceil($budget));
+        if ($timeout < 1) {
+            $timeout = 1;
         }
-        if ($timeout > 60) {
-            $timeout = 60;
-        }
+        // 连接超时取更短的值：绝大多数故障是「主机不可达」，靠连接超时快速倒下，
+        // 把剩余的预算留给后面还没拉过的链接
+        $connectTimeout = $timeout < 3 ? $timeout : 3;
 
         try {
             $client = new Client();
             $response = $client->get($url, array(
                 'timeout'         => $timeout,
-                'connect_timeout' => $timeout,
+                'connect_timeout' => $connectTimeout,
                 'stream'          => true,
                 'headers'         => array(
                     'User-Agent' => 'v2board-extra-subscribe/1.0',

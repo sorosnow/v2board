@@ -6075,7 +6075,7 @@
                 })), r.extra_subscribe_enable ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
                     isChildren: !0,
                     title: "额外订阅链接（一行一条，可多条）",
-                    description: "每行一条，也可用逗号分隔。支持 base64/明文 URI 列表与 Clash/Mihomo YAML，仅允许 http/https。多条会顺序拉取，最坏耗时约等于条数×超时。不支持的协议与 ss-2022 节点会被跳过。"
+                    description: "每行一条，也可用逗号分隔。支持 base64/明文 URI 列表与 Clash/Mihomo YAML，仅允许 http/https。多条共用下方的时间预算，超预算的链接留到下次请求再拉。不支持的协议与 ss-2022 节点会被跳过。"
                 }, f.a.createElement("textarea", {
                     rows: "5",
                     className: "form-control",
@@ -6094,12 +6094,12 @@
                     onChange: e=>this.set("subscribe", "extra_subscribe_cache_ttl", e.target.value)
                 })), f.a.createElement(m, {
                     isChildren: !0,
-                    title: "请求超时（秒）",
-                    description: "拉取附加订阅的超时时间。建议 10。"
+                    title: "时间预算（秒）",
+                    description: "附加订阅整体最多占用多少秒（所有链接共用），避免第三方不可达时拖慢订阅接口、导致客户端「更新订阅失败」。建议 3~5，最大 10。"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
-                    placeholder: "10",
+                    placeholder: "3",
                     defaultValue: r.extra_subscribe_timeout,
                     onChange: e=>this.set("subscribe", "extra_subscribe_timeout", e.target.value)
                 }))) : "")), f.a.createElement(s["a"].TabPane, {
