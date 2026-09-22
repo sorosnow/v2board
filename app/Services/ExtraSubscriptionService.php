@@ -16,6 +16,14 @@ use Illuminate\Support\Facades\Log;
  * 规则：
  *  - 支持**多条**链接：`extra_subscribe_url` 一行一条（**回车换行**，不支持逗号），
  *    每条**独立缓存**，一条挂掉不影响其他条
+ *  - 缓存内容：**每条链接各自缓存「拉取并解析后的节点列表」**（不是原始响应体，
+ *    也不是配置本身）：
+ *      key   = `extra_subscribe_<md5(url)>`
+ *      value = array('nodes' => [...解析后的节点...], 'skipped' => [...跳过统计...])
+ *      TTL   = `extra_subscribe_cache_ttl`（默认 300，最小 30）
+ *    另有一个防击穿占位锁 key：`extra_subscribe_<md5(url)>_fetching`（TTL 60）
+ *  - 保存后台配置时会调 `forgetCache()` 主动清掉（见 ConfigController::save），
+ *    所以改了链接 / TTL / 超时后**立即生效**，不用等 TTL 过期
  *  - 按节点名去重，**本站节点优先**（重名的附加节点不下发）
  *  - 附加节点保留其**自身凭据**（`_credential`），不会被本站用户 uuid 覆盖
  *  - 拉取失败 / 未配置 / 未开启 → **静默降级**，只下发本站节点
@@ -198,6 +206,38 @@ class ExtraSubscriptionService
     }
 
     /**
+     * 清掉「额外订阅」相关的缓存（保存后台配置后调用）
+     *
+     * 每清一条链接要清两个 key：
+     *  - 节点缓存 `extra_subscribe_<md5(url)>`
+     *  - 防击穿占位锁 `extra_subscribe_<md5(url)>_fetching`
+     *
+     * 用法：ConfigController::save() 会把**旧链接**和**新链接**都传进来，
+     * 所以正常从后台改链接 / TTL / 超时，不会留下任何残留缓存。
+     *
+     * ⚠️ 局限：key 只能由 URL 反推（`md5(url)`），无法枚举。
+     *    若**绕过 save()** 改了配置（直接改 config 文件、tinker、恢复备份、
+     *    单独跑 config:cache 等），旧 URL 的条目没人删，就变成「孤儿」：
+     *    再也不会被读取（不会导致脏数据），只是白占一小块内存，
+     *    最多一个 TTL 后自然过期（单条约几十 KB，可忽略）。
+     *
+     * @param  string|null $raw 多行链接配置；不传则读当前 config
+     * @return int 清掉的链接条数
+     */
+    public function forgetCache($raw = null)
+    {
+        $urls = $this->urls($raw);
+
+        foreach ($urls as $url) {
+            $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
+            Cache::forget($cacheKey);
+            Cache::forget($cacheKey . '_fetching');
+        }
+
+        return count($urls);
+    }
+
+    /**
      * 并发拉取所有 miss 链接并写回各自缓存
      *
      * P0-2：所有 miss 同时发出，总耗时 ≈ 最慢一条（而非 条数 × 超时）。
@@ -271,11 +311,14 @@ class ExtraSubscriptionService
      * 后台保存一次即完成迁移（避免旧值变成从后台清不掉的「幽灵链接」）。
      * 这里只做拆分/去重/限流，合法性交给 isUrlAllowed() 校验并记日志。
      *
+     * @param  string|null $raw 不传则读当前配置（传参用于清理旧配置的缓存）
      * @return array
      */
-    private function urls()
+    private function urls($raw = null)
     {
-        $raw = config('v2board.extra_subscribe_url', '');
+        if ($raw === null) {
+            $raw = config('v2board.extra_subscribe_url', '');
+        }
 
         if (is_array($raw)) {
             $lines = $raw;

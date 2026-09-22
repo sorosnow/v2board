@@ -5,6 +5,7 @@ namespace App\Http\Controllers\V1\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ConfigSave;
 use App\Jobs\SendEmailJob;
+use App\Services\ExtraSubscriptionService;
 use App\Services\TelegramService;
 use App\Utils\Dict;
 use Illuminate\Http\Request;
@@ -205,6 +206,8 @@ class ConfigController extends Controller
     public function save(ConfigSave $request)
     {
         $data = $request->validated();
+        // 额外订阅节点缓存与配置强相关：先记下保存前的链接，稍后一并清理
+        $oldExtraSubscribeUrl = (string)config('v2board.extra_subscribe_url');
         $config = config('v2board');
         foreach (ConfigSave::RULES as $k => $v) {
             if (!in_array($k, array_keys(ConfigSave::RULES))) {
@@ -225,6 +228,12 @@ class ConfigController extends Controller
             }
         }
         Artisan::call('config:cache');
+
+        // 额外订阅节点缓存与配置强相关（改了链接/TTL/超时都应立即生效）：
+        // 新旧链接的缓存都要清，否则改完还会命中旧结果，得等 TTL 过期才生效
+        $extraSubscribe = new ExtraSubscriptionService();
+        $extraSubscribe->forgetCache($oldExtraSubscribeUrl);
+        $extraSubscribe->forgetCache(isset($data['extra_subscribe_url']) ? $data['extra_subscribe_url'] : '');
         if(Cache::has('WEBMANPID')) {
             $pid = Cache::get('WEBMANPID');
             Cache::forget('WEBMANPID');
