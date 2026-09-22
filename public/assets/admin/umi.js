@@ -6075,7 +6075,7 @@
                 })), r.extra_subscribe_enable ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
                     isChildren: !0,
                     title: "额外订阅链接（一行一条）",
-                    description: "每行一条，用回车换行（不支持逗号分隔），最多 10 条。仅允许 http(s):// 开头；不支持的协议与 ss-2022 节点会被跳过。长链接不会折行，超出部分用横向滚动查看。"
+                    description: "每行一条，用回车换行（不支持逗号分隔），超出部分用横向滚动查看。"
                 }, f.a.createElement("textarea", {
                     wrap: "off",
                     rows: "5",
@@ -6086,7 +6086,7 @@
                 })), f.a.createElement(m, {
                     isChildren: !0,
                     title: "缓存时间（秒）",
-                    description: "附加订阅结果的缓存时长，避免高频拉取打爆第三方。建议 300。"
+                    description: "附加订阅结果的缓存时长，避免高频拉取打爆第三方。"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
@@ -6096,7 +6096,7 @@
                 })), f.a.createElement(m, {
                     isChildren: !0,
                     title: "请求超时（秒）",
-                    description: "单条链接的拉取超时。多条链接是并发拉取的，整体耗时约等于最慢的一条，而不是各条相加。建议 5。"
+                    description: "多条链接是并发拉取的，整体耗时约等于最慢的一条，而不是各条相加。"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
