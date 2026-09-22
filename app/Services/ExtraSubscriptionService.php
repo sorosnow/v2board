@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
  * 下发的节点列表后面（与 custom_subscribe_url 的「替换」语义不同）。
  *
  * 规则：
- *  - 支持**多条**链接：`extra_subscribe_url` 一行一条（也可用逗号分隔，最多 `MAX_URLS` 条），
+ *  - 支持**多条**链接：后台提供 5 个固定槽位（`extra_subscribe_url_1` ~ `_5`），
  *    每条**独立缓存**，一条挂掉不影响其他条
  *  - ⚠️ 拉取是**同步**的（在订阅请求内），所以有「总时间预算」（`extra_subscribe_timeout`，
  *    默认 3 秒，上限 10 秒）兜底：预算耗尽后剩下的链接跳过、留到下次请求再拉
@@ -251,25 +251,27 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 读取「额外订阅链接」配置，解析为去重后的链接数组
+     * 读取「额外订阅链接」配置（固定 5 个槽位），解析为去重后的链接数组
      *
-     * 支持三种写法：
-     *  - 多行（一行一条，推荐）
-     *  - 一行内用**逗号**并列多条（兼容历史习惯，见 splitByComma）
-     *  - 旧的单条写法（无分隔符）
-     *
+     * 兼容旧写法：槽位里若误粘贴了多行或逗号分隔的内容，也会被拆开（幂等）。
      * 这里只做拆分/去重/限流，合法性交给 request() 校验并记日志。
      *
      * @return array
      */
     private function urls()
     {
-        $raw = config('v2board.extra_subscribe_url', '');
-
-        if (is_array($raw)) {
-            $lines = $raw;
-        } else {
-            $lines = preg_split('/[\r\n]+/', (string)$raw);
+        $lines = array();
+        foreach (self::URL_KEYS as $key) {
+            $value = config('v2board.' . $key, '');
+            if (is_array($value)) {
+                foreach ($value as $item) {
+                    $lines[] = (string)$item;
+                }
+                continue;
+            }
+            foreach (preg_split('/[\r\n]+/', (string)$value) as $item) {
+                $lines[] = $item;
+            }
         }
 
         $urls = array();
@@ -324,6 +326,21 @@ class ExtraSubscriptionService
 
         return count($parts) > 1 ? $parts : array($line);
     }
+
+    /**
+     * 后台提供的 5 个额外订阅链接槽位（固定 5 行，与后台 UI 一一对应）
+     *
+     * ⚠️ 与 ConfigSave::RULES / Admin\ConfigController::fetch() 里的键名必须保持一致。
+     *    历史键 extra_subscribe_url（多行字符串）已弃用，仅用于后台回显迁移，
+     *    这里不再读取，避免旧值变成无法从后台清掉的「幽灵链接」。
+     */
+    const URL_KEYS = array(
+        'extra_subscribe_url_1',
+        'extra_subscribe_url_2',
+        'extra_subscribe_url_3',
+        'extra_subscribe_url_4',
+        'extra_subscribe_url_5',
+    );
 
     /**
      * 给 URL 打码（只保留 scheme/host/port/path，丢掉 query，即订阅 token）

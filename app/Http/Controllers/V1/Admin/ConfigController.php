@@ -121,7 +121,14 @@ class ConfigController extends Controller
                 'subscribe_limit_count' => (int)config('v2board.subscribe_limit_count', 60),
                 'subscribe_limit_expire' => (int)config('v2board.subscribe_limit_expire', 1),
                 'extra_subscribe_enable' => (int)config('v2board.extra_subscribe_enable', 0),
-                'extra_subscribe_url' => config('v2board.extra_subscribe_url'),
+                // extra subscribe：5 个固定槽位。
+                // 兼容迁移：旧的多行键 extra_subscribe_url 若还在，回显到第 1 槽，
+                // 后台保存一次即完成迁移（旧键此后不再被读取）。
+                'extra_subscribe_url_1' => config('v2board.extra_subscribe_url_1') ?: config('v2board.extra_subscribe_url'),
+                'extra_subscribe_url_2' => config('v2board.extra_subscribe_url_2'),
+                'extra_subscribe_url_3' => config('v2board.extra_subscribe_url_3'),
+                'extra_subscribe_url_4' => config('v2board.extra_subscribe_url_4'),
+                'extra_subscribe_url_5' => config('v2board.extra_subscribe_url_5'),
                 'extra_subscribe_cache_ttl' => (int)config('v2board.extra_subscribe_cache_ttl', 300),
                 'extra_subscribe_timeout' => (int)config('v2board.extra_subscribe_timeout', 3),
             ],
