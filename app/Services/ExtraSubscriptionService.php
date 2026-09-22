@@ -79,16 +79,28 @@ class ExtraSubscriptionService
 
         $added = array();
         foreach ($nodes as $node) {
-            $name = isset($node['name']) ? (string)$node['name'] : '';
-            // 无名节点无法参与去重，跳过
+            $name = isset($node['name']) ? trim((string)$node['name']) : '';
+
             if ($name === '') {
+                // URI 没带 #名字：用 host:port 兜底（撞名加序号），别把整条链接的节点丢掉
+                $base = (isset($node['host']) ? $node['host'] : '') . ':'
+                    . (isset($node['port']) ? $node['port'] : '');
+                if ($base === ':') {
+                    continue;
+                }
+                $name = $base;
+                $seq = 1;
+                while (isset($used[$name])) {
+                    $seq++;
+                    $name = $base . ' #' . $seq;
+                }
+            } elseif (isset($used[$name])) {
+                // 有名字的：重名跳过（本站优先）
                 continue;
             }
-            // 重名跳过（本站优先）
-            if (isset($used[$name])) {
-                continue;
-            }
+
             $used[$name] = true;
+            $node['name'] = $name;
             $added[] = $node;
         }
 

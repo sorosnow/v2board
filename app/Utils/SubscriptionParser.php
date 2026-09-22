@@ -419,8 +419,11 @@ class SubscriptionParser
         $node['insecure'] = $insecure;
         $node['tls_settings'] = $tlsSettings;
         $node['tlsSettings'] = $tlsSettings;
-        $node['up_mbps'] = isset($query['upmbps']) ? (int)$query['upmbps'] : 0;
-        $node['down_mbps'] = isset($query['downmbps']) ? (int)$query['downmbps'] : 0;
+        // 内部字段是「服务器视角」，而渲染器是反着取的
+        // （Helper::buildHysteriaUri / ClashMeta::buildHysteria 里 upmbps 取 down_mbps），
+        // 所以这里反向存，才能让下发出去的 upmbps/downmbps 与源 URI 一致
+        $node['up_mbps'] = isset($query['downmbps']) ? (int)$query['downmbps'] : 0;
+        $node['down_mbps'] = isset($query['upmbps']) ? (int)$query['upmbps'] : 0;
         $node['server_key'] = '';
         if (!empty($query['obfs'])) {
             $node['obfs'] = $query['obfs'];
@@ -463,6 +466,12 @@ class SubscriptionParser
         if (strpos($userinfo, ':') !== false) {
             $parts = explode(':', $userinfo, 2);
             $credential = rawurldecode($parts[0]);
+            // 渲染器的 tuic 约定是 uuid == password（一个凭据同时当 uuid 与密码），
+            // 表达不了 uuid != password 的节点，下发只会得到连不上的僵尸节点
+            if (rawurldecode($parts[1]) !== $credential) {
+                self::skip('tuic_password_mismatch');
+                return null;
+            }
         } else {
             $credential = rawurldecode($userinfo);
         }
