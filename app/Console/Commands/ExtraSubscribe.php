@@ -54,7 +54,10 @@ class ExtraSubscribe extends Command
         }
 
         if (!(int)config('v2board.extra_subscribe_enable', 0)) {
-            $this->warn('额外订阅未启用（后台「订阅设置」→「附加订阅」），本轮不拉取。');
+            // 定时任务每分钟跑一次：未启用时保持安静，只在人工执行时提示
+            if ($this->output->isDecorated()) {
+                $this->warn('额外订阅未启用（后台「订阅设置」→「附加订阅」），本轮不拉取。');
+            }
             return;
         }
 
@@ -62,12 +65,17 @@ class ExtraSubscribe extends Command
 
         if ($result['skipped']) {
             $this->warn('本轮跳过：已有刷新实例在跑，或锁文件不可写（后者看 storage/logs/laravel.log）。');
-        } else {
+        } elseif ($result['refreshed'] || $result['failed']) {
             $this->info('刷新完成：成功 ' . $result['refreshed'] . ' 条，失败 '
                 . $result['failed'] . ' 条，共 ' . $result['nodes'] . ' 个节点。');
         }
 
-        $this->showStatus($service->status());
+        // 本命令由 Kernel::schedule 每分钟调度一次，没有实际动作时不要输出：
+        // 否则 cron 日志会被「刷新完成：成功 0 条」和状态表刷屏。
+        // 人工在终端执行（或加 --status）时照常打印完整状态。
+        if ($this->output->isDecorated() || $result['refreshed'] || $result['failed']) {
+            $this->showStatus($service->status());
+        }
     }
 
     /**

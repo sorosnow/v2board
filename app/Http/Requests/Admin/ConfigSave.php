@@ -148,6 +148,7 @@ class ConfigSave extends FormRequest
         // 额外订阅链接是**多行字符串**（回车换行），逐行校验（空行跳过）
         $rules['extra_subscribe_url'][] = function ($attribute, $value, $fail) {
             $count = 0;
+            $seen = array();
             foreach (preg_split('/[\r\n]+/', (string)$value) as $line) {
                 $line = trim($line);
                 if ($line === '') {
@@ -157,6 +158,12 @@ class ConfigSave extends FormRequest
                     $fail('额外订阅链接格式不正确，必须为 http(s):// 开头的完整地址（一行一条）');
                     return;
                 }
+                // 按**去重后**的条数计：服务端 urls() 会去重，
+                // 否则「10 条链接里粘贴了 1 条重复」会被误报成超过上限
+                if (isset($seen[$line])) {
+                    continue;
+                }
+                $seen[$line] = true;
                 $count++;
             }
             // 与服务端的 ExtraSubscriptionService::MAX_URLS 对齐：

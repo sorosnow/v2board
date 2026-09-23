@@ -59,59 +59,68 @@ class ExtraSubscriptionService
      */
     public function merge(array $servers)
     {
-        // 附加订阅不允许影响本站节点下发：兜住所有 Throwable（含依赖不兼容的 PHP Error）
+        // 附加订阅不允许影响本站节点下发：整段兜住所有 Throwable（含依赖不兼容的 PHP Error）
         try {
             $nodes = $this->nodes();
-        } catch (\Throwable $e) {
-            Log::warning('extra subscribe: read store failed - ' . $e->getMessage());
-            return $servers;
-        }
-
-        if (!$nodes) {
-            return $servers;
-        }
-
-        // 已占用名字：本站节点优先
-        $used = array();
-        foreach ($servers as $server) {
-            if (isset($server['name'])) {
-                $used[(string)$server['name']] = true;
+            if (!$nodes) {
+                return $servers;
             }
-        }
 
-        $added = array();
-        foreach ($nodes as $node) {
-            $name = isset($node['name']) ? trim((string)$node['name']) : '';
+            // 已占用名字：本站节点优先
+            $used = array();
+            foreach ($servers as $server) {
+                if (isset($server['name']) && is_scalar($server['name'])) {
+                    $used[(string)$server['name']] = true;
+                }
+            }
 
-            if ($name === '') {
-                // URI 没带 #名字：用 host:port 兜底（撞名加序号），别把整条链接的节点丢掉
-                $base = (isset($node['host']) ? $node['host'] : '') . ':'
-                    . (isset($node['port']) ? $node['port'] : '');
-                if ($base === ':') {
+            $added = array();
+            foreach ($nodes as $node) {
+                // 存储文件可能残留旧格式或被手改：脏节点直接丢弃。
+                // type/host/port 是渲染器**无守护**读取的字段（ClashMeta/ClashVerge/Stash/Singbox
+                // 共 32 处直接读 $server['host']），缺任何一个都会把整份订阅打成 500，
+                // 而不是少一个节点——所以这里必须自己筛。
+                if (!is_array($node)) {
                     continue;
                 }
-                $name = $base;
-                $seq = 1;
-                while (isset($used[$name])) {
-                    $seq++;
-                    $name = $base . ' #' . $seq;
+                $type = isset($node['type']) && is_scalar($node['type']) ? (string)$node['type'] : '';
+                $host = isset($node['host']) && is_scalar($node['host']) ? trim((string)$node['host']) : '';
+                $port = isset($node['port']) && is_scalar($node['port']) ? (string)$node['port'] : '';
+                if ($type === '' || $host === '' || $port === '') {
+                    continue;
                 }
-            } elseif (isset($used[$name])) {
-                // 有名字的：重名跳过（本站优先）
-                continue;
+                $name = isset($node['name']) && is_scalar($node['name']) ? trim((string)$node['name']) : '';
+
+                if ($name === '') {
+                    // URI 没带 #名字：用 host:port 兜底（撞名加序号），别把整条链接的节点丢掉
+                    $base = $host . ':' . $port;
+                    $name = $base;
+                    $seq = 1;
+                    while (isset($used[$name])) {
+                        $seq++;
+                        $name = $base . ' #' . $seq;
+                    }
+                } elseif (isset($used[$name])) {
+                    // 有名字的：重名跳过（本站优先）
+                    continue;
+                }
+
+                $used[$name] = true;
+                $node['name'] = $name;
+                $added[] = $node;
             }
 
-            $used[$name] = true;
-            $node['name'] = $name;
-            $added[] = $node;
-        }
+            if (!$added) {
+                return $servers;
+            }
 
-        if (!$added) {
+            // 附加节点始终排在后面
+            return array_merge($servers, $added);
+        } catch (\Throwable $e) {
+            // 节点名可能带地址，异常消息一律打码后再落日志
+            Log::warning('extra subscribe: merge failed - ' . $this->maskText($e->getMessage()));
             return $servers;
         }
-
-        // 附加节点始终排在后面
-        return array_merge($servers, $added);
     }
 
     /**
@@ -155,10 +164,12 @@ class ExtraSubscriptionService
             foreach ($urls as $url) {
                 $keep[md5($url)] = true;
             }
+            $cleaned = false;
             if (!empty($store['urls']) && is_array($store['urls'])) {
                 foreach (array_keys($store['urls']) as $key) {
                     if (!isset($keep[$key])) {
                         unset($store['urls'][$key]);
+                        $cleaned = true;
                     }
                 }
             }
@@ -185,7 +196,11 @@ class ExtraSubscriptionService
                 }
             }
 
-            $this->saveStore($store);
+            // 没有到期链接、也没有需要清理的记录时不必重写文件：
+            // 这条命令每分钟跑一次，无条件写会让存储文件每分钟都被无谓 rename 一次
+            if ($due || $cleaned) {
+                $this->saveStore($store);
+            }
         } catch (\Throwable $e) {
             Log::warning('extra subscribe: refresh failed - ' . $e->getMessage());
         } finally {
@@ -216,8 +231,10 @@ class ExtraSubscriptionService
                 'last_success_at' => $lastSuccess,
                 'last_attempt_at' => isset($row['last_attempt_at']) ? (int)$row['last_attempt_at'] : null,
                 'error'           => isset($row['error']) ? $row['error'] : null,
-                // 与 nodes() 用同一套判据，否则命令行会谎报「当前下发」状态
-                'serving'         => $lastSuccess !== null && $lastSuccess + $this->maxStaleTtl() >= $now,
+                // 与 nodes() 用同一套判据（含「这条到底有没有节点」），
+                // 否则「有上次成功时间、但节点是空的」会被谎报成「当前下发：是」
+                'serving'         => $lastSuccess !== null && $lastSuccess + $this->maxStaleTtl() >= $now
+                    && !empty($row['nodes']) && is_array($row['nodes']),
             );
         }
 
