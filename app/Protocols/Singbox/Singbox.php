@@ -69,6 +69,11 @@ class Singbox
                     $proxies[] = $vmessConfig;
                     break;
                 case 'vless':
+                    // sing-box 没有 xhttp 传输：buildVless 会写出空 transport（客户端会拒绝该配置）
+                    // → 跳过这个节点，与 Loon / QuantumultX 的处理一致
+                    if (isset($item['network']) && !in_array($item['network'], array('tcp', 'ws', 'grpc'), true)) {
+                        break;
+                    }
                     $vlessConfig = $this->buildVless($uuid, $item);
                     $proxies[] = $vlessConfig;
                     break;

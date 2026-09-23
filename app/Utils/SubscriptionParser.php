@@ -58,8 +58,8 @@ class SubscriptionParser
      * Clash 系（Clash/ClashMeta/ClashVerge/ClashNyanpasu/Stash）与 sing-box 都只在
      * ws / grpc 时才写 network（tcp 是缺省），h2 / http / httpupgrade / kcp / quic /
      * domainsocket 会被**静默丢掉** → 客户端按 tcp 连 → 必然失败且看不出原因。
-     * xhttp 只有 ClashMeta / ClashVerge / ClashNyanpasu 有分支，Stash 的分派无守卫、
-     * sing-box 会发出空 transport → 只有部分客户端能用，故一并不保留。
+     * vless 额外允许 xhttp（见 networkAllowed() 第二参）：ClashMeta / ClashVerge /
+     * ClashNyanpasu / Stash 都能忠实下发；sing-box 没有该传输，已在渲染器侧跳过这类节点。
      *
      * @var array
      */
@@ -275,11 +275,12 @@ class SubscriptionParser
      * 传输方式白名单：不支持的直接丢弃（原样下发只会得到「按 tcp 连」的坏节点）
      *
      * @param  string $network
+     * @param  array  $extra 额外允许的传输（目前只有 vless 的 xhttp）
      * @return bool
      */
-    private static function networkAllowed($network)
+    private static function networkAllowed($network, $extra = array())
     {
-        if (in_array($network, self::$networks, true)) {
+        if (in_array($network, self::$networks, true) || in_array($network, $extra, true)) {
             return true;
         }
         self::skip('unsupported_network:' . $network);
@@ -385,8 +386,8 @@ class SubscriptionParser
         }
 
         $network = !empty($query['type']) ? $query['type'] : 'tcp';
-        // 同 parseVmess：xhttp 也只有部分渲染器支持，见 networkAllowed()
-        if (!self::networkAllowed($network)) {
+        // vless 额外保留 xhttp（Clash 系与 Stash 都能忠实下发，见 networkAllowed()）
+        if (!self::networkAllowed($network, array('xhttp'))) {
             return null;
         }
         $networkSettings = self::uriNetworkSettings($query, $network);

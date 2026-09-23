@@ -263,6 +263,18 @@ class Stash
                 if (isset($grpcSettings['serviceName'])) $array['grpc-opts']['grpc-service-name'] = $grpcSettings['serviceName'];
             }
         }
+        // 与同族（ClashMeta / ClashVerge / ClashNyanpasu）保持一致：xhttp 必须原样下发，
+        // 否则得到的是「缺省 tcp」的坏节点（客户端看不出原因）
+        if ($server['network'] === 'xhttp') {
+            $array['network'] = 'xhttp';
+            if ($server['network_settings']) {
+                $xhttpSettings = $server['network_settings'];
+                $array['xhttp-opts'] = [];
+                if (isset($xhttpSettings['path'])) $array['xhttp-opts']['path'] = $xhttpSettings['path'];
+                if (isset($xhttpSettings['host'])) $array['xhttp-opts']['host'] = $xhttpSettings['host'];
+                if (isset($xhttpSettings['mode'])) $array['xhttp-opts']['mode'] = $xhttpSettings['mode'];
+            }
+        }
 
         return $array;
     }
