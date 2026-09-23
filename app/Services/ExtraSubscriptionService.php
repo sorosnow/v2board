@@ -18,7 +18,9 @@ use Illuminate\Support\Facades\Log;
  * 读方永远看不到写一半的内容），每条链接一份：
  *  nodes / node_count / skipped / error / last_attempt_at / last_success_at
  *  - 拉取失败只写 error 与 last_attempt_at，**不动 nodes**（旧节点继续下发）
- *  - 刷新间隔 = extra_subscribe_cache_ttl（默认 300，最小 30）；失败后 FAIL_RETRY_TTL(60s) 重试
+ *  - 刷新间隔 = 后台的 extra_subscribe_cache_ttl（默认 300，下限 MIN_REFRESH_TTL=30）；
+ *    该配置键名是历史遗留（原来是 Redis 缓存 TTL），语义就是「多久去刷新一次」，
+ *    键名不变以免动后台与线上已有配置；拉取失败后按 FAIL_RETRY_TTL(60s) 重试
  *  - 解析不出节点的响应（空 body / 非订阅内容）同样按失败处理，避免清空已下发的节点
  *  - 上一次成功超过 MAX_STALE_TTL(7 天) 则不再下发，避免长期下发一堆死节点
  *  - 配置里删掉的链接，会在下次刷新时从文件里清掉
@@ -36,8 +38,8 @@ class ExtraSubscriptionService
     /** 响应体大小上限（字节） */
     const MAX_BODY_BYTES = 2097152; // 2MB
 
-    /** 刷新间隔下限（秒） */
-    const MIN_CACHE_TTL = 30;
+    /** 刷新间隔下限（秒）：后台设得再小也会被抬到这里 */
+    const MIN_REFRESH_TTL = 30;
 
     /** 拉取失败后的重试间隔（秒） */
     const FAIL_RETRY_TTL = 60;
@@ -135,14 +137,13 @@ class ExtraSubscriptionService
         $lock = $this->lockStore();
         if (!$lock) {
             $summary['skipped'] = true;
-            Log::debug('extra subscribe: refresh skipped, another run is in progress');
             return $summary;
         }
 
         try {
             $store = $this->loadStore();
             $now = time();
-            $ttl = $this->cacheTtl();
+            $interval = $this->refreshInterval();
 
             // 配置里已删除的链接：从文件里清掉
             $keep = array();
@@ -162,7 +163,7 @@ class ExtraSubscriptionService
             foreach ($urls as $url) {
                 $key = md5($url);
                 $row = isset($store['urls'][$key]) ? $store['urls'][$key] : null;
-                if ($force || $this->isDue($row, $now, $ttl)) {
+                if ($force || $this->isDue($row, $now, $interval)) {
                     $due[$url] = $key;
                 }
             }
@@ -355,17 +356,17 @@ class ExtraSubscriptionService
      *
      * @param  array|null $row
      * @param  int        $now
-     * @param  int        $ttl
+     * @param  int        $interval
      * @return bool
      */
-    private function isDue($row, $now, $ttl)
+    private function isDue($row, $now, $interval)
     {
         if (!is_array($row)) {
             return true; // 从没拉过
         }
         $last = (int)(isset($row['last_attempt_at']) ? $row['last_attempt_at'] : 0);
         // 上次失败：短间隔重试；上次成功：按配置的刷新间隔
-        $wait = empty($row['error']) ? $ttl : min($ttl, self::FAIL_RETRY_TTL);
+        $wait = empty($row['error']) ? $interval : min($interval, self::FAIL_RETRY_TTL);
 
         return $last + $wait <= $now;
     }
@@ -441,18 +442,22 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 取独占锁（拿不到说明已有实例在拉，直接跳过本轮）
+     * 取独占锁：拿不到返回 null（原因分两种，日志里区分开）
      *
      * @return resource|null
      */
     private function lockStore()
     {
-        $fp = @fopen($this->storePath() . '.lock', 'c');
+        $path = $this->storePath() . '.lock';
+        $fp = @fopen($path, 'c');
         if (!$fp) {
+            // 锁文件建不出来通常是 storage/app 权限问题，不能报成「已有实例在跑」
+            Log::warning('extra subscribe: cannot open lock file (check storage/app permission) - ' . $path);
             return null;
         }
         if (!@flock($fp, LOCK_EX | LOCK_NB)) {
             fclose($fp);
+            Log::debug('extra subscribe: refresh skipped, another run is in progress');
             return null;
         }
 
@@ -515,15 +520,18 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 刷新间隔（秒）
+     * 刷新间隔（秒）：后台配置的「缓存时间」与下限取大
+     *
+     * 配置键 extra_subscribe_cache_ttl 是历史遗留名字，现在语义就是
+     * 「多久去第三方刷新一次」；键名不改以免动后台 UI 与线上已有配置。
      *
      * @return int
      */
-    private function cacheTtl()
+    private function refreshInterval()
     {
-        $ttl = (int)config('v2board.extra_subscribe_cache_ttl', 300);
+        $interval = (int)config('v2board.extra_subscribe_cache_ttl', 300);
 
-        return $ttl < self::MIN_CACHE_TTL ? self::MIN_CACHE_TTL : $ttl;
+        return $interval < self::MIN_REFRESH_TTL ? self::MIN_REFRESH_TTL : $interval;
     }
 
     /**

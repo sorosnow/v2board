@@ -56,7 +56,7 @@ class ExtraSubscribe extends Command
         $result = $service->refresh($this->option('force') ? true : false);
 
         if ($result['skipped']) {
-            $this->warn('已有刷新实例在执行，本轮跳过。');
+            $this->warn('本轮跳过：已有刷新实例在跑，或锁文件不可写（后者看 storage/logs/laravel.log）。');
         } else {
             $this->info('刷新完成：成功 ' . $result['refreshed'] . ' 条，失败 '
                 . $result['failed'] . ' 条，共 ' . $result['nodes'] . ' 个节点。');
