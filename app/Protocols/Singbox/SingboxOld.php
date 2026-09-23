@@ -46,41 +46,41 @@ class SingboxOld
     {
         $proxies = [];
     
-        // 保存原始凭据：外部订阅节点会临时覆盖 $this->user['uuid']
+        // 本站凭据只取一次；外部节点用自身凭据且只写局部变量 $uuid，不碰共享的 User 模型
         $defaultUuid = $this->user['uuid'];
 
         foreach ($this->servers as $item) {
-            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
-            $this->user['uuid'] = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $defaultUuid;
+            // 外部订阅节点使用其自身凭据；只写局部变量，不要写 $user['uuid']（那是共享的 Eloquent 模型）
+            $uuid = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $defaultUuid;
             if ($item['type'] === 'v2node') {
                 $item['type'] = $item['protocol'];
             }
             if ($item['type'] === 'shadowsocks') {
-                $ssConfig = $this->buildShadowsocks($this->user['uuid'], $item);
+                $ssConfig = $this->buildShadowsocks($uuid, $item);
                 $proxies[] = $ssConfig;
             }
             if ($item['type'] === 'trojan') {
-                $trojanConfig = $this->buildTrojan($this->user['uuid'], $item);
+                $trojanConfig = $this->buildTrojan($uuid, $item);
                 $proxies[] = $trojanConfig;
             }
             if ($item['type'] === 'vmess') {
-                $vmessConfig = $this->buildVmess($this->user['uuid'], $item);
+                $vmessConfig = $this->buildVmess($uuid, $item);
                 $proxies[] = $vmessConfig;
             }
             if ($item['type'] === 'vless') {
-                $vlessConfig = $this->buildVless($this->user['uuid'], $item);
+                $vlessConfig = $this->buildVless($uuid, $item);
                 $proxies[] = $vlessConfig;
             }
             if ($item['type'] === 'tuic') {
-                $tuicConfig = $this->buildTuic($this->user['uuid'], $item);
+                $tuicConfig = $this->buildTuic($uuid, $item);
                 $proxies[] = $tuicConfig;
             }
             if ($item['type'] === 'hysteria') {
-                $hysteriaConfig = $this->buildHysteria($this->user['uuid'], $item, $this->user);
+                $hysteriaConfig = $this->buildHysteria($uuid, $item, $this->user);
                 $proxies[] = $hysteriaConfig;
             }
             if ($item['type'] === 'hysteria2') {
-                $hysteriaConfig = $this->buildHysteria2($this->user['uuid'], $item, $this->user);
+                $hysteriaConfig = $this->buildHysteria2($uuid, $item, $this->user);
                 $proxies[] = $hysteriaConfig;
             }
         }

@@ -21,6 +21,10 @@ class Clash
     {
         $servers = $this->servers;
         $user = $this->user;
+
+        // 本站凭据只取一次：外部节点的 _credential 只写局部变量，
+        // 不能写 $user['uuid'] —— $this->user 是共享的 Eloquent 模型
+        $defaultUuid = $this->user['uuid'];
         $appName = config('v2board.app_name', 'V2Board');
         header("subscription-userinfo: upload={$user['u']}; download={$user['d']}; total={$user['transfer_enable']}; expire={$user['expired_at']}");
         header('profile-update-interval: 24');
@@ -37,8 +41,8 @@ class Clash
         $proxies = [];
 
         foreach ($servers as $item) {
-            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
-            $user['uuid'] = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $this->user['uuid'];
+            // 外部订阅节点使用其自身凭据；只写局部变量，不要写 $user['uuid']（那是共享的 Eloquent 模型）
+            $uuid = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $defaultUuid;
             if ($item['type'] === 'v2node') {
                 $item['type'] = $item['protocol'];
             }
@@ -50,15 +54,15 @@ class Clash
                     'chacha20-ietf-poly1305'
                 ])
             ) {
-                array_push($proxy, self::buildShadowsocks($user['uuid'], $item));
+                array_push($proxy, self::buildShadowsocks($uuid, $item));
                 array_push($proxies, $item['name']);
             }
             if ($item['type'] === 'vmess') {
-                array_push($proxy, self::buildVmess($user['uuid'], $item));
+                array_push($proxy, self::buildVmess($uuid, $item));
                 array_push($proxies, $item['name']);
             }
             if ($item['type'] === 'trojan') {
-                array_push($proxy, self::buildTrojan($user['uuid'], $item));
+                array_push($proxy, self::buildTrojan($uuid, $item));
                 array_push($proxies, $item['name']);
             }
         }

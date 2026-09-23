@@ -20,6 +20,10 @@ class Shadowrocket
     {
         $user = $this->user;
 
+        // 本站凭据只取一次：外部节点的 _credential 只写局部变量，
+        // 不能写 $user['uuid'] —— $this->user 是共享的 Eloquent 模型
+        $defaultUuid = $this->user['uuid'];
+
         $uri = '';
         //display remaining traffic and expire date
         $upload = round($user['u'] / (1024*1024*1024), 2);
@@ -29,12 +33,12 @@ class Shadowrocket
         $uri .= "STATUS=🚀↑:{$upload}GB,↓:{$download}GB,TOT:{$totalTraffic}GB💡Expires:{$expiredDate}\r\n";
 
         foreach ($this->servers as $server) {
-            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
-            $user['uuid'] = isset($server['_credential']) && $server['_credential'] !== '' ? $server['_credential'] : $this->user['uuid'];
+            // 外部订阅节点使用其自身凭据；只写局部变量，不要写 $user['uuid']（那是共享的 Eloquent 模型）
+            $uuid = isset($server['_credential']) && $server['_credential'] !== '' ? $server['_credential'] : $defaultUuid;
             if ($server['type'] === 'vmess' || ($server['type'] === 'v2node' && $server['protocol'] === 'vmess')) {
-                $uri .= self::buildVmess($user['uuid'], $server);
+                $uri .= self::buildVmess($uuid, $server);
             } else {
-                $uri .= Helper::buildUri($user['uuid'], $server);
+                $uri .= Helper::buildUri($uuid, $server);
             }
         }
         return base64_encode($uri);

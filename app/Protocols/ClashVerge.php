@@ -21,6 +21,10 @@ class ClashVerge
     {
         $servers = $this->servers;
         $user = $this->user;
+
+        // 本站凭据只取一次：外部节点的 _credential 只写局部变量，
+        // 不能写 $user['uuid'] —— $this->user 是共享的 Eloquent 模型
+        $defaultUuid = $this->user['uuid'];
         $appName = config('v2board.app_name', 'V2Board');
         header("subscription-userinfo: upload={$user['u']}; download={$user['d']}; total={$user['transfer_enable']}; expire={$user['expired_at']}");
         header('profile-update-interval: 24');
@@ -36,43 +40,43 @@ class ClashVerge
         $proxies = [];
 
         foreach ($servers as $item) {
-            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
-            $user['uuid'] = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $this->user['uuid'];
+            // 外部订阅节点使用其自身凭据；只写局部变量，不要写 $user['uuid']（那是共享的 Eloquent 模型）
+            $uuid = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $defaultUuid;
             // Singbox-style inline adaptation: unwrap v2node
             if (($item['type'] ?? null) === 'v2node' && isset($item['protocol'])) {
                 $item['type'] = $item['protocol'];
             }
             switch ($item['type']) {
                 case 'shadowsocks':
-                    $proxy[] = self::buildShadowsocks($user['uuid'], $item);
+                    $proxy[] = self::buildShadowsocks($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'vmess':
-                    $proxy[] = self::buildVmess($user['uuid'], $item);
+                    $proxy[] = self::buildVmess($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'vless':
-                    $proxy[] = self::buildVless($user['uuid'], $item);
+                    $proxy[] = self::buildVless($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'trojan':
-                    $proxy[] = self::buildTrojan($user['uuid'], $item);
+                    $proxy[] = self::buildTrojan($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'tuic':
-                    $proxy[] = self::buildTuic($user['uuid'], $item);
+                    $proxy[] = self::buildTuic($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'anytls':
-                    $proxy[] = self::buildAnyTLS($user['uuid'], $item);
+                    $proxy[] = self::buildAnyTLS($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'hysteria':
-                    $proxy[] = self::buildHysteria($user['uuid'], $item);
+                    $proxy[] = self::buildHysteria($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'hysteria2':
-                    $proxy[] = $this->buildHysteria2($user['uuid'], $item);
+                    $proxy[] = $this->buildHysteria2($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
             }

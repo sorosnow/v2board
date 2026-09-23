@@ -21,6 +21,10 @@ class Surfboard
         $servers = $this->servers;
         $user = $this->user;
 
+        // 本站凭据只取一次：外部节点的 _credential 只写局部变量，
+        // 不能写 $user['uuid'] —— $this->user 是共享的 Eloquent 模型
+        $defaultUuid = $this->user['uuid'];
+
         $appName = config('v2board.app_name', 'V2Board');
         header("content-disposition:attachment;filename*=UTF-8''".rawurlencode($appName).".conf");
 
@@ -28,8 +32,8 @@ class Surfboard
         $proxyGroup = '';
 
         foreach ($servers as $item) {
-            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
-            $user['uuid'] = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $this->user['uuid'];
+            // 外部订阅节点使用其自身凭据；只写局部变量，不要写 $user['uuid']（那是共享的 Eloquent 模型）
+            $uuid = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $defaultUuid;
             if (($item['type'] ?? null) === 'v2node' && isset($item['protocol'])) {
                 $item['type'] = $item['protocol'];
             }
@@ -42,25 +46,25 @@ class Surfboard
                 ])
             ) {
                 // [Proxy]
-                $proxies .= self::buildShadowsocks($user['uuid'], $item);
+                $proxies .= self::buildShadowsocks($uuid, $item);
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
             }
             if ($item['type'] === 'vmess') {
                 // [Proxy]
-                $proxies .= self::buildVmess($user['uuid'], $item);
+                $proxies .= self::buildVmess($uuid, $item);
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
             }
             if ($item['type'] === 'trojan') {
                 // [Proxy]
-                $proxies .= self::buildTrojan($user['uuid'], $item);
+                $proxies .= self::buildTrojan($uuid, $item);
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
             }
             if ($item['type'] === 'anytls') {
                 // [Proxy]
-                $proxies .= self::buildAnyTLS($user['uuid'], $item);
+                $proxies .= self::buildAnyTLS($uuid, $item);
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
             }

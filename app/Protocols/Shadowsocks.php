@@ -19,6 +19,10 @@ class Shadowsocks
         $servers = $this->servers;
         $user = $this->user;
 
+        // 本站凭据只取一次：外部节点的 _credential 只写局部变量，
+        // 不能写 $user['uuid'] —— $this->user 是共享的 Eloquent 模型
+        $defaultUuid = $this->user['uuid'];
+
         $configs = [];
         $subs = [];
         $subs['servers'] = [];
@@ -29,12 +33,12 @@ class Shadowsocks
         $bytesRemaining = $user['transfer_enable'] - $bytesUsed;
 
         foreach ($servers as $item) {
-            // 外部订阅节点使用其自身凭据，避免被本站用户 uuid 覆盖
-            $user['uuid'] = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $this->user['uuid'];
+            // 外部订阅节点使用其自身凭据；只写局部变量，不要写 $user['uuid']（那是共享的 Eloquent 模型）
+            $uuid = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $defaultUuid;
             if ($item['type'] === 'shadowsocks'
                 && in_array($item['cipher'], ['aes-128-gcm', 'aes-256-gcm', 'aes-192-gcm', 'chacha20-ietf-poly1305'])
             ) {
-                array_push($configs, self::SIP008($item, $user));
+                array_push($configs, self::SIP008($item, $uuid));
             }
         }
 
@@ -46,14 +50,14 @@ class Shadowsocks
         return json_encode($subs, JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT);
     }
 
-    public static function SIP008($server, $user)
+    public static function SIP008($server, $uuid)
     {
         $config = [
             "id" => $server['id'],
             "remarks" => $server['name'],
             "server" => $server['host'],
             "server_port" => $server['port'],
-            "password" => $user['uuid'],
+            "password" => $uuid,
             "method" => $server['cipher']
         ];
         return $config;
