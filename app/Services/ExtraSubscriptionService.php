@@ -128,10 +128,14 @@ class ExtraSubscriptionService
             return $summary;
         }
 
-        $urls = $this->urls();
+        $urls = $this->urls(null, true);
         if (!$urls) {
             return $summary;
         }
+
+        // storage/app 在个别部署里可能不存在：先确保目录在，
+        // 否则锁文件与存储文件都写不进去，功能会静默失效
+        $this->ensureStoreDir();
 
         // 同一时刻只允许一个实例真正拉取（定时任务与手动执行可能撞上）
         $lock = $this->lockStore();
@@ -141,7 +145,7 @@ class ExtraSubscriptionService
         }
 
         try {
-            $store = $this->loadStore();
+            $store = $this->loadStore(true);
             $now = time();
             $interval = $this->refreshInterval();
 
@@ -197,11 +201,11 @@ class ExtraSubscriptionService
      */
     public function status()
     {
-        $store = $this->loadStore();
+        $store = $this->loadStore(true);
         $now = time();
         $rows = array();
 
-        foreach ($this->urls() as $url) {
+        foreach ($this->urls(null, true) as $url) {
             $key = md5($url);
             $row = isset($store['urls'][$key]) ? $store['urls'][$key] : array();
             $lastSuccess = isset($row['last_success_at']) ? (int)$row['last_success_at'] : null;
@@ -387,6 +391,17 @@ class ExtraSubscriptionService
      * ------------------------------------------------------------------ */
 
     /**
+     * 确保 storage/app 存在（个别部署里可能被清理；不存在则锁文件/存储文件都写不进去）
+     */
+    private function ensureStoreDir()
+    {
+        $dir = storage_path('app');
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+    }
+
+    /**
      * 存储文件路径
      *
      * @return string
@@ -399,9 +414,11 @@ class ExtraSubscriptionService
     /**
      * 读取存储文件（不存在 / 损坏一律当空处理，不影响本站节点下发）
      *
+     * @param  bool $fromRefresh 是否由刷新/查看状态触发的：
+     *                           请求路径上不记日志，否则文件一损坏每个订阅请求都刷一行
      * @return array
      */
-    private function loadStore()
+    private function loadStore($fromRefresh = false)
     {
         $empty = array('version' => 1, 'urls' => array());
         $path = $this->storePath();
@@ -414,7 +431,9 @@ class ExtraSubscriptionService
         }
         $data = json_decode($raw, true);
         if (!is_array($data) || !isset($data['urls']) || !is_array($data['urls'])) {
-            Log::warning('extra subscribe: store file is broken, treat as empty');
+            if ($fromRefresh) {
+                Log::warning('extra subscribe: store file is broken, treat as empty');
+            }
             return $empty;
         }
 
@@ -501,9 +520,10 @@ class ExtraSubscriptionService
      * 合法性交给 isUrlAllowed()。历史槽位键 _1/_2 不再读取。
      *
      * @param  string|null $raw 不传则读当前配置
+     * @param  bool        $logLimit 是否记录「超过上限」日志：请求路径上不记
      * @return array
      */
-    private function urls($raw = null)
+    private function urls($raw = null, $logLimit = false)
     {
         if ($raw === null) {
             $raw = config('v2board.extra_subscribe_url', '');
@@ -525,8 +545,10 @@ class ExtraSubscriptionService
         }
 
         if (count($urls) > self::MAX_URLS) {
-            Log::warning('extra subscribe: too many urls (' . count($urls)
-                . '), only the first ' . self::MAX_URLS . ' will be used');
+            if ($logLimit) {
+                Log::warning('extra subscribe: too many urls (' . count($urls)
+                    . '), only the first ' . self::MAX_URLS . ' will be used');
+            }
             $urls = array_slice($urls, 0, self::MAX_URLS);
         }
 

@@ -53,6 +53,11 @@ class ExtraSubscribe extends Command
             return;
         }
 
+        if (!(int)config('v2board.extra_subscribe_enable', 0)) {
+            $this->warn('额外订阅未启用（后台「订阅设置」→「附加订阅」），本轮不拉取。');
+            return;
+        }
+
         $result = $service->refresh($this->option('force') ? true : false);
 
         if ($result['skipped']) {
