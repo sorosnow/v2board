@@ -36,7 +36,12 @@ class SubscriptionParser
     );
 
     /**
-     * 本项目原生支持的 ss cipher（与后台表单白名单、渲染器判断保持一致）
+     * 第三方节点能用的 ss cipher
+     *
+     * 渲染器里 Clash / Shadowsocks / Surfboard 就是按这 4 种过滤的（不在名单内整条不下发），
+     * ClashMeta 系则把 cipher 原样写进配置，所以非这 4 种必须在解析阶段就丢掉。
+     * 表单允许的另外两种 2022-blake3-* 也是本项目原生支持的 cipher，但只对本站节点成立
+     * （server key 要靠 created_at 派生），已在 parseShadowsocks() 开头单独跳过。
      *
      * @var array
      */
