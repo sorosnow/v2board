@@ -270,8 +270,6 @@ class SubscriptionParser
     /**
      * 传输方式是否认得（认不得就丢掉并记原因）
      *
-     * 传进来的值应当已经过 canonicalNetwork() 归一（见那里为什么不在本表里放别名）
-     *
      * @param  string $network
      * @return bool
      */
@@ -283,38 +281,6 @@ class SubscriptionParser
         self::skip('unsupported_network:' . $network);
 
         return false;
-    }
-
-    /**
-     * 传输名别名 → 项目自己用的名字
-     *
-     * 项目自己的名字就是后台表单与渲染器都在用的那一套（tcp / ws / grpc / kcp / http /
-     * h2 / httpupgrade / xhttp / quic / domainsocket）。上游客户端后来改过名字：
-     *   · raw       = Xray 25.x 给 TCP 起的新名字（本项目仍叫 tcp）
-     *   · splithttp = XHTTP 的旧名（本项目仍叫 xhttp）
-     * 两者是同一个传输的两种拼写（Xray 的配置里 xhttpSettings 与 splithttpSettings 是同一个
-     * 结构体），所以只在这一层归一：归一后渲染器拿到的是它们本来就有的名字。
-     *
-     * 别把别名写进 self::$networks，也别往后台表单里加：渲染器没有这两个分支，
-     * 走 Helper::networkExpressible 会被判否 —— 等于把节点从「能忠实下发」改成
-     * 「静默不下发」；未登记该传输的客户端还会按 tcp 连（坏节点）。
-     *
-     * @var array
-     */
-    private static $networkAliases = array(
-        'raw'       => 'tcp',
-        'splithttp' => 'xhttp',
-    );
-
-    /**
-     * 把外部链接里的传输名归一成项目自己的名字（不在别名表里的原样返回，交给白名单去丢）
-     *
-     * @param  string $network
-     * @return string
-     */
-    private static function canonicalNetwork($network)
-    {
-        return isset(self::$networkAliases[$network]) ? self::$networkAliases[$network] : $network;
     }
 
     private static function parseVmess($uri)
@@ -348,7 +314,7 @@ class SubscriptionParser
             'allow_insecure' => isset($cfg['allowInsecure']) ? (int)$cfg['allowInsecure'] : 0,
             'allowInsecure'  => isset($cfg['allowInsecure']) ? (int)$cfg['allowInsecure'] : 0,
         );
-        $network = self::canonicalNetwork(!empty($cfg['net']) ? $cfg['net'] : 'tcp');
+        $network = !empty($cfg['net']) ? $cfg['net'] : 'tcp';
         if (!self::networkAllowed($network)) {
             return null;
         }
@@ -414,7 +380,7 @@ class SubscriptionParser
             $tlsSettings['short_id'] = isset($query['sid']) ? $query['sid'] : '';
         }
 
-        $network = self::canonicalNetwork(!empty($query['type']) ? $query['type'] : 'tcp');
+        $network = !empty($query['type']) ? $query['type'] : 'tcp';
         if (!self::networkAllowed($network)) {
             return null;
         }
@@ -468,7 +434,7 @@ class SubscriptionParser
         $insecure = isset($query['allowInsecure']) ? self::bool01($query['allowInsecure'])
             : (isset($query['insecure']) ? self::bool01($query['insecure']) : 0);
 
-        $network = self::canonicalNetwork(!empty($query['type']) ? $query['type'] : 'tcp');
+        $network = !empty($query['type']) ? $query['type'] : 'tcp';
         if (!self::networkAllowed($network)) {
             return null;
         }
@@ -680,8 +646,8 @@ class SubscriptionParser
             $tlsSettings['short_id'] = isset($query['sid']) ? $query['sid'] : '';
         }
 
-        // 归一后再判：anytls 本身没有传输概念（所有渲染器都不读它的 network）：只认缺省 tcp
-        $network = self::canonicalNetwork(!empty($query['type']) ? $query['type'] : 'tcp');
+        $network = !empty($query['type']) ? $query['type'] : 'tcp';
+        // anytls 本身没有传输概念（所有渲染器都不读它的 network）：只认缺省 tcp
         if ($network !== 'tcp') {
             self::skip('unsupported_network:' . $network);
             return null;
