@@ -9,27 +9,12 @@ use Illuminate\Support\Facades\Log;
 /**
  * 额外订阅（附加节点）服务
  *
- * 架构：拉取与下发分离
- *  - refresh()：由定时任务（extra:subscribe，每分钟）拉取第三方 → 解析 → 落盘
- *  - merge()：用户订阅请求里**只读本地文件**，绝不发起 HTTP
- *    好处：用户请求不再被第三方拖慢；第三方挂掉/抖动时仍继续下发上一次成功的结果
+ * 拉取与下发分离：refresh() 由定时任务（extra:subscribe）拉第三方并落盘，
+ * merge() 在订阅请求里只读本地文件、绝不发 HTTP（用户不被拖慢，第三方挂了也不断线）。
  *
- * 存储：storage/app/extra-subscribe.json（单机文件；写入用「临时文件 + rename」保证原子，
- * 读方永远看不到写一半的内容），每条链接一份：
- *  nodes / node_count / skipped / error / last_attempt_at / last_success_at
- *  - 拉取失败只写 error 与 last_attempt_at，**不动 nodes**（旧节点继续下发）
- *  - 刷新间隔 = 后台的 extra_subscribe_cache_ttl（默认 300，下限 MIN_REFRESH_TTL=30）；
- *    该配置键名是历史遗留（原来是 Redis 缓存 TTL），语义就是「多久去刷新一次」，
- *    键名不变以免动后台与线上已有配置；拉取失败后按 FAIL_RETRY_TTL(60s) 重试
- *  - 解析不出节点的响应（空 body / 非订阅内容）同样按失败处理，避免清空已下发的节点
- *  - 上一次成功太久（默认 MAX_STALE_TTL=7 天，且不短于刷新间隔的 3 倍）就不再下发，
- *    避免长期下发一堆死节点；两者取大是为了防止「间隔比它长」时节点在两次刷新间静默消失
- *  - 配置里删掉的链接，会在下次刷新时从文件里清掉
- *
- * 安全：文件在 storage 下（非 web 目录），内容含第三方节点凭据（与配置里的链接同等级）；
- *      日志里链接一律打码。内网 SSRF 检查按站长决策移除，保留 http/https 白名单。
- *
- * 语法上限 PHP 8.0（composer.json 要求 ^8.0）：可用 8.0 写法，不用 8.1+ 特性。
+ * 存储 storage/app/extra-subscribe.json（临时文件 + rename 原子替换）；拉取失败只写
+ * error 与 last_attempt_at、不动 nodes；解析不出节点也算失败；删掉的链接下次刷新清理。
+ * 文件含第三方节点凭据（在 storage 下，非 web 目录）；日志里链接一律打码。
  */
 class ExtraSubscriptionService
 {
@@ -39,27 +24,27 @@ class ExtraSubscriptionService
     /** 响应体大小上限（字节） */
     const MAX_BODY_BYTES = 2097152; // 2MB
 
-    /** 刷新间隔下限（秒）：后台设得再小也会被抬到这里 */
+    /** 刷新间隔下限（秒） */
     const MIN_REFRESH_TTL = 30;
 
     /** 拉取失败后的重试间隔（秒） */
     const FAIL_RETRY_TTL = 60;
 
-    /** 上一次成功的结果最长沿用（秒） */
+    /** 上次成功结果最长沿用（秒），见 maxStaleTtl() */
     const MAX_STALE_TTL = 604800; // 7 天
 
-    /** 链接条数上限（超出只取前几条并记 warning） */
+    /** 链接条数上限 */
     const MAX_URLS = 10;
 
     /**
-     * 把「额外订阅」的节点合并进本站节点列表（用户请求路径：只读本地，不发 HTTP）
+     * 把附加节点合并进本站节点列表（订阅请求路径：只读本地，不发 HTTP）
      *
-     * @param  array $servers 本站可用节点
+     * @param  array $servers
      * @return array
      */
     public function merge(array $servers)
     {
-        // 附加订阅不允许影响本站节点下发：兜住所有 Throwable（含依赖不兼容的 PHP Error）
+        // 附加订阅不允许影响本站节点下发
         try {
             $nodes = $this->nodes();
         } catch (\Throwable $e) {
@@ -84,7 +69,7 @@ class ExtraSubscriptionService
             $name = isset($node['name']) ? trim((string)$node['name']) : '';
 
             if ($name === '') {
-                // URI 没带 #名字：用 host:port 兜底（撞名加序号），别把整条链接的节点丢掉
+                // 没带名字：用 host:port 兜底（撞名加序号）
                 $base = (isset($node['host']) ? $node['host'] : '') . ':'
                     . (isset($node['port']) ? $node['port'] : '');
                 if ($base === ':') {
@@ -97,7 +82,6 @@ class ExtraSubscriptionService
                     $name = $base . ' #' . $seq;
                 }
             } elseif (isset($used[$name])) {
-                // 有名字的：重名跳过（本站优先）
                 continue;
             }
 
@@ -110,16 +94,14 @@ class ExtraSubscriptionService
             return $servers;
         }
 
-        // 附加节点始终排在后面
         return array_merge($servers, $added);
     }
 
     /**
-     * 拉取并落盘（供定时任务 / 手动执行调用）
+     * 拉取并落盘（定时任务 / 手动执行）
      *
-     * @param  bool $force 忽略刷新间隔，强制全部重拉
-     * @return array ['refreshed' => 成功条数, 'failed' => 失败条数, 'nodes' => 节点数,
-     *                'skipped' => 是否因「已有实例在跑」而整体跳过]
+     * @param  bool $force 忽略刷新间隔
+     * @return array ['refreshed' => 成功条数, 'failed' => 失败条数, 'nodes' => 节点数, 'skipped' => 被锁跳过]
      */
     public function refresh($force = false)
     {
@@ -134,11 +116,8 @@ class ExtraSubscriptionService
             return $summary;
         }
 
-        // storage/app 在个别部署里可能不存在：先确保目录在，
-        // 否则锁文件与存储文件都写不进去，功能会静默失效
         $this->ensureStoreDir();
 
-        // 同一时刻只允许一个实例真正拉取（定时任务与手动执行可能撞上）
         $lock = $this->lockStore();
         if (!$lock) {
             $summary['skipped'] = true;
@@ -195,11 +174,7 @@ class ExtraSubscriptionService
         return $summary;
     }
 
-    /**
-     * 当前各链接的状态（供命令展示）
-     *
-     * @return array
-     */
+    /** 各链接状态（供命令展示） */
     public function status()
     {
         $store = $this->loadStore(true);
@@ -216,7 +191,7 @@ class ExtraSubscriptionService
                 'last_success_at' => $lastSuccess,
                 'last_attempt_at' => isset($row['last_attempt_at']) ? (int)$row['last_attempt_at'] : null,
                 'error'           => isset($row['error']) ? $row['error'] : null,
-                // 与 nodes() 用同一套判据，否则命令行会谎报「当前下发」状态
+                // 与 nodes() 同一套判据，否则命令行会谎报「当前下发」状态
                 'serving'         => $lastSuccess !== null && $lastSuccess + $this->maxStaleTtl() >= $now,
             );
         }
@@ -224,15 +199,9 @@ class ExtraSubscriptionService
         return $rows;
     }
 
-    /* ------------------------------------------------------------------
-     |  下发路径（只读本地）
-     * ------------------------------------------------------------------ */
+    /* ---------- 下发路径（只读本地） ---------- */
 
-    /**
-     * 读取本地存储里的附加节点（不发任何请求）
-     *
-     * @return array
-     */
+    /** 读本地存储里的附加节点（不发任何请求） */
     private function nodes()
     {
         if (!(int)config('v2board.extra_subscribe_enable', 0)) {
@@ -255,7 +224,7 @@ class ExtraSubscriptionService
             }
             $row = $store['urls'][$key];
             $lastSuccess = (int)(isset($row['last_success_at']) ? $row['last_success_at'] : 0);
-            // 上一次成功太久之前：宁可不发，也不下发一堆早已失效的节点
+            // 上次成功太久：宁可不发，也不下发一堆早已失效的节点
             if ($lastSuccess + $this->maxStaleTtl() < $now) {
                 continue;
             }
@@ -267,17 +236,9 @@ class ExtraSubscriptionService
         return $nodes;
     }
 
-    /* ------------------------------------------------------------------
-     |  拉取路径（只在定时任务 / 手动执行时跑）
-     * ------------------------------------------------------------------ */
+    /* ---------- 拉取路径（只在定时任务 / 手动执行时跑） ---------- */
 
-    /**
-     * 并发拉取 due 里的链接，并把结果写回 $store（失败保留原 nodes）
-     *
-     * @param array $store 引用
-     * @param array $due   url => cacheKey
-     * @param int   $now
-     */
+    /** 并发拉取 due 里的链接，结果写回 $store（失败保留原 nodes） */
     private function fetchInto(&$store, $due, $now)
     {
         $client = new Client();
@@ -292,17 +253,15 @@ class ExtraSubscriptionService
             try {
                 $promises[$url] = $client->getAsync($url, $this->requestOptions());
             } catch (\Throwable $e) {
-                // 构造请求本身也可能抛（URL 形态奇怪等）：记成这条失败。
-                // 否则一条坏链接会把整批（其他链接）的刷新一起带崩。
+                // 构造请求也可能抛：记成这条失败，别让一条坏链接带崩整批
                 $reason = $this->maskText($e->getMessage());
                 Log::warning('extra subscribe: build request failed - ' . $this->maskUrl($url) . ' - ' . $reason);
                 $store['urls'][$key] = $this->failRow($store, $key, $url, $now, $reason);
             }
         }
 
-        // 不用 \GuzzleHttp\Promise\settle()：函数式 API 在 promises 2.0 已移除，
-        // 而 guzzle ^7.4.3 新装会解析到 2.x，调用即 undefined function。
-        // 逐个 wait()：请求已在同一 curl_multi 中，并发性不受影响，单条失败不影响其他条。
+        // 不用 \GuzzleHttp\Promise\settle()：promises 2.0 已移除函数式 API，
+        // 而 guzzle ^7.4.3 新装会解析到 2.x；逐个 wait() 不影响并发，单条失败不影响其他条
         foreach ($promises as $url => $promise) {
             $key = $due[$url];
 
@@ -315,14 +274,12 @@ class ExtraSubscriptionService
                 }
 
                 $parsed = SubscriptionParser::parse($body);
-                // 无条件记录节点数：成功但 0 节点时也要有日志，否则排查是黑盒
                 Log::debug('extra subscribe: got ' . count($parsed['nodes']) . ' node(s), '
                     . strlen($body) . ' bytes, skipped=' . json_encode($parsed['skipped'])
                     . ' - ' . $this->maskUrl($url));
 
                 if (!$parsed['nodes']) {
-                    // 解析不出节点（空 body / 非 URI 列表等）：按失败处理，
-                    // 保留上一次成功的结果，别让一次抖动把已下发的节点清空
+                    // 空 body / 非订阅内容：按失败处理，保留上一次成功的结果
                     $store['urls'][$key] = $this->failRow($store, $key, $url, $now, 'no nodes parsed');
                     continue;
                 }
@@ -337,7 +294,7 @@ class ExtraSubscriptionService
                     'last_success_at' => $now,
                 );
             } catch (\Throwable $e) {
-                // Guzzle 异常消息里带完整 URL（含 token）：整条消息里的 URL 一律打码后再落日志
+                // Guzzle 异常消息里带完整 URL（含 token）：先整条打码再落日志
                 $reason = $this->maskText($e->getMessage());
                 Log::warning('extra subscribe: fetch failed - ' . $this->maskUrl($url) . ' - ' . $reason);
                 $store['urls'][$key] = $this->failRow($store, $key, $url, $now, $reason);
@@ -345,11 +302,7 @@ class ExtraSubscriptionService
         }
     }
 
-    /**
-     * 构造「失败」记录：保留上一次成功的 nodes，只更新 error 与 last_attempt_at
-     *
-     * @return array
-     */
+    /** 失败记录：保留原 nodes，只更新 error 与 last_attempt_at */
     private function failRow($store, $key, $url, $now, $error)
     {
         $old = isset($store['urls'][$key]) ? $store['urls'][$key] : array();
@@ -364,14 +317,7 @@ class ExtraSubscriptionService
         );
     }
 
-    /**
-     * 该条链接是否到了该刷新的时间
-     *
-     * @param  array|null $row
-     * @param  int        $now
-     * @param  int        $interval
-     * @return bool
-     */
+    /** 是否到了该刷新的时间 */
     private function isDue($row, $now, $interval)
     {
         if (!is_array($row)) {
@@ -379,46 +325,31 @@ class ExtraSubscriptionService
         }
         $last = (int)(isset($row['last_attempt_at']) ? $row['last_attempt_at'] : 0);
         if ($last > $now) {
-            return true; // 时间戳在未来（改过服务器时间等）：别把自己卡成永不刷新
+            return true; // 时间戳在未来：别把自己卡成永不刷新
         }
-        // 上次失败：短间隔重试；上次成功：按配置的刷新间隔
+        // 失败：短间隔重试；成功：按刷新间隔
         $wait = empty($row['error']) ? $interval : min($interval, self::FAIL_RETRY_TTL);
 
         return $last + $wait <= $now;
     }
 
-    /* ------------------------------------------------------------------
-     |  本地存储
-     * ------------------------------------------------------------------ */
+    /* ---------- 本地存储 ---------- */
 
-    /**
-     * 确保 storage/app 存在（个别部署里可能被清理；不存在则锁文件/存储文件都写不进去）
-     */
     private function ensureStoreDir()
     {
+        // storage/app 可能被清理掉：不存在则锁文件与存储文件都写不进去
         $dir = storage_path('app');
         if (!is_dir($dir)) {
             @mkdir($dir, 0755, true);
         }
     }
 
-    /**
-     * 存储文件路径
-     *
-     * @return string
-     */
     private function storePath()
     {
         return storage_path('app/' . self::STORE_FILE);
     }
 
-    /**
-     * 读取存储文件（不存在 / 损坏一律当空处理，不影响本站节点下发）
-     *
-     * @param  bool $fromRefresh 是否由刷新/查看状态触发的：
-     *                           请求路径上不记日志，否则文件一损坏每个订阅请求都刷一行
-     * @return array
-     */
+    /** 读存储文件；不存在 / 损坏一律当空处理（只有 $fromRefresh 时才记日志，避免请求路径刷屏） */
     private function loadStore($fromRefresh = false)
     {
         $empty = array('version' => 1, 'urls' => array());
@@ -441,17 +372,12 @@ class ExtraSubscriptionService
         return $data;
     }
 
-    /**
-     * 写存储文件：先写临时文件再 rename（原子替换）
-     *
-     * @param  array $store
-     * @return bool
-     */
+    /** 写存储文件：临时文件 + rename 原子替换 */
     private function saveStore($store)
     {
         $path = $this->storePath();
-        // JSON_INVALID_UTF8_SUBSTITUTE：第三方节点名可能是 GBK / 截断的 UTF-8，
-        // 不加这个标志 json_encode 会整体返回 false -> 一份节点都存不下来
+        // JSON_INVALID_UTF8_SUBSTITUTE：节点名可能是 GBK / 截断 UTF-8，
+        // 不加这个标志 json_encode 会整体失败，一份节点都存不下来
         $json = json_encode($store, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
             | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($json === false) {
@@ -468,24 +394,19 @@ class ExtraSubscriptionService
             Log::warning('extra subscribe: replace store failed');
             return false;
         }
-        // 本文件由定时任务（可能是 root）写、由 web 用户读：
-        // 万一写入方 umask 是 0077，会变成 0600 导致 web 读不到，这里显式放开读权限
+        // 本文件由定时任务（可能是 root）写、web 用户读，显式放开读权限
         @chmod($path, 0644);
 
         return true;
     }
 
-    /**
-     * 取独占锁：拿不到返回 null（原因分两种，日志里区分开）
-     *
-     * @return resource|null
-     */
+    /** 取独占锁；拿不到（被占 / 建档失败）返回 null，原因记日志 */
     private function lockStore()
     {
         $path = $this->storePath() . '.lock';
         $fp = @fopen($path, 'c');
         if (!$fp) {
-            // 锁文件建不出来通常是 storage/app 权限问题，不能报成「已有实例在跑」
+            // 建不出锁文件通常是 storage/app 权限问题，别报成「已有实例在跑」
             Log::warning('extra subscribe: cannot open lock file (check storage/app permission) - ' . $path);
             return null;
         }
@@ -498,9 +419,6 @@ class ExtraSubscriptionService
         return $fp;
     }
 
-    /**
-     * @param resource|null $fp
-     */
     private function unlockStore($fp)
     {
         if (!$fp) {
@@ -510,20 +428,9 @@ class ExtraSubscriptionService
         @fclose($fp);
     }
 
-    /* ------------------------------------------------------------------
-     |  配置与请求
-     * ------------------------------------------------------------------ */
+    /* ---------- 配置与请求 ---------- */
 
-    /**
-     * 读取额外订阅链接配置，拆分为去重后的数组
-     *
-     * 一行一条（回车换行，不支持逗号）；只做拆分 / 去重 / 限流，
-     * 合法性交给 isUrlAllowed()。历史槽位键 _1/_2 不再读取。
-     *
-     * @param  string|null $raw 不传则读当前配置
-     * @param  bool        $logLimit 是否记录「超过上限」日志：请求路径上不记
-     * @return array
-     */
+    /** 拆分配置里的链接（一行一条、去重、限流）；$logLimit 只有刷新 / status 才记「超过上限」日志 */
     private function urls($raw = null, $logLimit = false)
     {
         if ($raw === null) {
@@ -557,12 +464,10 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 刷新间隔（秒）：后台配置的「缓存时间」与下限取大
+     * 刷新间隔（秒）：配置的「缓存时间」与下限取大
      *
-     * 配置键 extra_subscribe_cache_ttl 是历史遗留名字，现在语义就是
-     * 「多久去第三方刷新一次」；键名不改以免动后台 UI 与线上已有配置。
-     *
-     * @return int
+     * 配置键 extra_subscribe_cache_ttl 是历史遗留名字（原为 Redis 缓存 TTL），
+     * 语义是「多久刷新一次」；键名不改以免动后台 UI 与线上已有配置。
      */
     private function refreshInterval()
     {
@@ -571,15 +476,7 @@ class ExtraSubscriptionService
         return $interval < self::MIN_REFRESH_TTL ? self::MIN_REFRESH_TTL : $interval;
     }
 
-    /**
-     * 上一次成功的结果最长沿用（秒）
-     *
-     * 取「MAX_STALE_TTL(7 天)」与「刷新间隔 × 3」中的大者：
-     * 如果站长把刷新间隔设得比 7 天还长（缓存时间字段没有上限），
-     * 用小者会让节点在两次刷新之间静默消失 —— 必须先有机会刷新。
-     *
-     * @return int
-     */
+    /** 上次成功的结果最长沿用（秒）= max(MAX_STALE_TTL, 刷新间隔 × 3)；刷新间隔没有上限，取小会让节点在两次刷新之间静默消失 */
     private function maxStaleTtl()
     {
         $floor = $this->refreshInterval() * 3;
@@ -587,12 +484,7 @@ class ExtraSubscriptionService
         return $floor > self::MAX_STALE_TTL ? $floor : self::MAX_STALE_TTL;
     }
 
-    /**
-     * URL 校验：仅允许 http / https
-     *
-     * @param  string $url
-     * @return bool
-     */
+    /** 仅允许 http / https */
     private function isUrlAllowed($url)
     {
         $parts = parse_url($url);
@@ -608,19 +500,13 @@ class ExtraSubscriptionService
         return true;
     }
 
-    /**
-     * 构造请求选项
-     *
-     * @return array
-     */
+    /** 请求选项（单条超时夹紧到 [3, 10]） */
     private function requestOptions()
     {
-        // 并发模式下总耗时约最慢一条；单条超时默认 5s，夹紧到 [3, 10]
         $timeout = (int)config('v2board.extra_subscribe_timeout', 5);
         if ($timeout < 3) {
             $timeout = 3;
         }
-        // 上限 10s：本超时只在定时任务里等待，无需再长
         if ($timeout > 10) {
             $timeout = 10;
         }
@@ -628,8 +514,8 @@ class ExtraSubscriptionService
         return array(
             'timeout'         => $timeout,
             'connect_timeout' => $timeout,
-            // 不要加 'stream' => true：stream 模式下 promise 收到响应头就 resolve，
-            // 异步时 body 尚未写入流，readBody() 读到空串 -> 0 节点
+            // 不要加 'stream' => true：promise 收到响应头就 resolve，此时 body 还没写入流，
+            // readBody() 读到空串 -> 0 节点
             'headers'         => array(
                 'User-Agent' => 'v2board-extra-subscribe/1.0',
                 'Accept'     => 'text/plain, */*',
@@ -637,12 +523,7 @@ class ExtraSubscriptionService
         );
     }
 
-    /**
-     * 流式读取响应体并限制大小（避免大文件打爆内存）
-     *
-     * @param  \Psr\Http\Message\StreamInterface $stream
-     * @return string|null 超限时返回 null
-     */
+    /** 流式读取 body，超限返回 null */
     private function readBody($stream)
     {
         $body = '';
@@ -661,12 +542,7 @@ class ExtraSubscriptionService
         return $body;
     }
 
-    /**
-     * 给 URL 打码：丢掉 query（即订阅 token）
-     *
-     * @param  string $url
-     * @return string
-     */
+    /** URL 打码（丢掉 query，即订阅 token） */
     private function maskUrl($url)
     {
         $parts = parse_url($url);
@@ -685,15 +561,7 @@ class ExtraSubscriptionService
         return $masked;
     }
 
-    /**
-     * 把一段文本里的所有 http(s) 地址打码
-     *
-     * 异常消息里出现的 URL 可能是跳转后的最终地址（与请求时的原始串不同），
-     * 所以不能只做 str_replace($url, ...)，否则 token 会明文进日志。
-     *
-     * @param  string $text
-     * @return string
-     */
+    /** 把文本里所有 http(s) 地址打码：异常消息里的 URL 可能是跳转后的地址，只替换原始 URL 会让 token 明文进日志 */
     private function maskText($text)
     {
         return preg_replace('#https?://[^\s"\'<>()]+#i', '(url masked)', (string)$text);
