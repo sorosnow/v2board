@@ -284,7 +284,15 @@ class ExtraSubscriptionService
                 $store['urls'][$key] = $this->failRow($store, $key, $url, $now, 'url not allowed');
                 continue;
             }
-            $promises[$url] = $client->getAsync($url, $this->requestOptions());
+            try {
+                $promises[$url] = $client->getAsync($url, $this->requestOptions());
+            } catch (\Throwable $e) {
+                // 构造请求本身也可能抛（URL 形态奇怪等）：记成这条失败。
+                // 否则一条坏链接会把整批（其他链接）的刷新一起带崩。
+                $reason = $this->maskText($e->getMessage());
+                Log::warning('extra subscribe: build request failed - ' . $this->maskUrl($url) . ' - ' . $reason);
+                $store['urls'][$key] = $this->failRow($store, $key, $url, $now, $reason);
+            }
         }
 
         // 不用 \GuzzleHttp\Promise\settle()：函数式 API 在 promises 2.0 已移除，
@@ -365,6 +373,9 @@ class ExtraSubscriptionService
             return true; // 从没拉过
         }
         $last = (int)(isset($row['last_attempt_at']) ? $row['last_attempt_at'] : 0);
+        if ($last > $now) {
+            return true; // 时间戳在未来（改过服务器时间等）：别把自己卡成永不刷新
+        }
         // 上次失败：短间隔重试；上次成功：按配置的刷新间隔
         $wait = empty($row['error']) ? $interval : min($interval, self::FAIL_RETRY_TTL);
 
@@ -419,7 +430,10 @@ class ExtraSubscriptionService
     private function saveStore($store)
     {
         $path = $this->storePath();
-        $json = json_encode($store, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        // JSON_INVALID_UTF8_SUBSTITUTE：第三方节点名可能是 GBK / 截断的 UTF-8，
+        // 不加这个标志 json_encode 会整体返回 false -> 一份节点都存不下来
+        $json = json_encode($store, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($json === false) {
             Log::warning('extra subscribe: encode store failed');
             return false;
