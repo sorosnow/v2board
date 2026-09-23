@@ -697,11 +697,11 @@ class SubscriptionParser
             'type'       => $type,
             'name'       => $name,
             'host'       => trim($host),
-            // id 不能固定 0：SIP008（Shadowsocks 渲染器）会把它原样下发给客户端，
-            // 多个附加节点撞在同一个 id 上时，部分客户端以 id 为主键会互相覆盖。
-            // 用节点内容派生 → 刷新后不变（客户端不会看到 id 抖动）；
-            // 加上 1e9 的偏移是为了避开本站的自增小整数 id（客户端按 int32 存也不会溢出）。
-            'id'         => 1000000000 + abs(crc32($type . '|' . $host . ':' . $port . '|' . $name)) % 1000000000,
+            // id 固定 0：附加订阅只是把外部节点拼到本站节点后面，id 不参与任何逻辑。
+            // （整个项目只有 SIP008 会把它原样带出去，而客户端是按
+            //  (server, server_port, remarks) 认身份的，见 shadowsocks-android 官方 JSON 文档
+            //  → 没必要为它做内容派生；注意这个字段不能直接删掉，渲染器是无守护读取）
+            'id'         => 0,
             'created_at' => $now,
             'updated_at' => $now,
             'is_online'  => 1,
