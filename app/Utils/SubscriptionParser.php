@@ -36,21 +36,14 @@ class SubscriptionParser
     );
 
     /**
-     * 第三方节点能用的 ss cipher
+     * 第三方节点能用的 ss cipher —— 单一来源：Helper::SS_CIPHERS
      *
-     * 渲染器里 Clash / Shadowsocks / Surfboard 就是按这 4 种过滤的（不在名单内整条不下发），
-     * ClashMeta 系则把 cipher 原样写进配置，所以非这 4 种必须在解析阶段就丢掉。
-     * 表单允许的另外两种 2022-blake3-* 也是本项目原生支持的 cipher，但只对本站节点成立
+     * 只有这 4 种是各端都能忠实下发的；表单允许的另外两种 2022-blake3-* 只对本站节点成立
      * （server key 要靠 created_at 派生），已在 parseShadowsocks() 开头单独跳过。
      *
      * @var array
      */
-    private static $ssCiphers = array(
-        'aes-128-gcm',
-        'aes-192-gcm',
-        'aes-256-gcm',
-        'chacha20-ietf-poly1305',
-    );
+    private static $ssCiphers = Helper::SS_CIPHERS;
 
     /**
      * 认得的传输方式（不在这张表里的直接丢弃 —— 陌生取值原样下发只会得到「按 tcp 连」的坏节点）

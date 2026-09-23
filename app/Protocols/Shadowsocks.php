@@ -2,6 +2,8 @@
 
 namespace App\Protocols;
 
+use App\Utils\Helper;
+
 class Shadowsocks
 {
     public $flag = 'shadowsocks';
@@ -33,7 +35,7 @@ class Shadowsocks
             // 外部订阅节点使用其自身凭据；只写局部变量，不要写 $user['uuid']（那是共享的 Eloquent 模型）
             $uuid = isset($item['_credential']) && $item['_credential'] !== '' ? $item['_credential'] : $defaultUuid;
             if ($item['type'] === 'shadowsocks'
-                && in_array($item['cipher'], ['aes-128-gcm', 'aes-256-gcm', 'aes-192-gcm', 'chacha20-ietf-poly1305'])
+                && in_array($item['cipher'], Helper::SS_CIPHERS)
             ) {
                 array_push($configs, self::SIP008($item, $uuid));
             }

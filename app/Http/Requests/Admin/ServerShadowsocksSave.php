@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Admin;
 
+use App\Utils\Helper;
 use Illuminate\Foundation\Http\FormRequest;
 
 class ServerShadowsocksSave extends FormRequest
@@ -22,7 +23,7 @@ class ServerShadowsocksSave extends FormRequest
             'host' => 'required',
             'port' => 'required',
             'server_port' => 'required',
-            'cipher' => 'required|in:aes-128-gcm,aes-192-gcm,aes-256-gcm,chacha20-ietf-poly1305,2022-blake3-aes-128-gcm,2022-blake3-aes-256-gcm',
+            'cipher' => 'required|in:' . implode(',', array_merge(Helper::SS_CIPHERS, Helper::SS_CIPHERS_2022)),
             'obfs' => 'nullable|in:http',
             'obfs_settings' => 'nullable|array',
             'tags' => 'nullable|array',

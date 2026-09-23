@@ -6,6 +6,33 @@ use Illuminate\Support\Facades\Cache;
 
 class Helper
 {
+    /**
+     * ss 的 cipher 白名单（渲染器 / SIP008 / 附加订阅解析器 / 面板 app.clash.yaml 共用这一张表）
+     *
+     * 只有这 4 种是「各端都能忠实下发」的 AEAD cipher：Clash / Surfboard / Shadowsocks(SIP008)
+     * 会按这张表过滤（不在名单里整条不下发），ClashMeta 系则把 cipher 原样写进配置
+     * → 所以陌生取值必须在解析阶段就丢掉。改这张表 = 同时改上面所有地方，别再各写一份。
+     */
+    const SS_CIPHERS = array(
+        'aes-128-gcm',
+        'aes-192-gcm',
+        'aes-256-gcm',
+        'chacha20-ietf-poly1305',
+    );
+
+    /**
+     * 站点表单额外允许的 2022 系列（**只对本站节点成立**）
+     *
+     * 它的 server key 要靠节点 created_at 派生（见 getServerKey），而附加订阅节点没有
+     * created_at → 解析器在 parseShadowsocks() 开头就单独跳过 2022，存储侧
+     * （ExtraSubscriptionService::$nodeValues）也不放行：否则渲染器会在 ss2022 分支
+     * 无守护地读 created_at → 整份订阅 500（tools/store-value-audit.php 守着这条）。
+     */
+    const SS_CIPHERS_2022 = array(
+        '2022-blake3-aes-128-gcm',
+        '2022-blake3-aes-256-gcm',
+    );
+
     public static function uuidToBase64($uuid, $length)
     {
         return base64_encode(substr($uuid, 0, $length));

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Utils\Helper;
 use App\Utils\SubscriptionParser;
 use GuzzleHttp\Client;
 use Illuminate\Support\Facades\Log;
@@ -81,8 +82,9 @@ class ExtraSubscriptionService
     /**
      * 存在性之外的第二层：这些字段的**取值**也必须合法（只收会导致渲染器抛异常或客户端拒收的）
      *
-     * - shadowsocks 的 cipher：ClashMeta / ClashVerge / Stash / Singbox **没有白名单**，会把空值或
-     *   陌生值原样写进配置（客户端不认）——tools/store-value-audit.php 实测确认
+     * - shadowsocks 的 cipher：白名单就是 Helper::SS_CIPHERS（4 种 AEAD）—— ClashMeta / ClashVerge /
+     *   Stash / Singbox **没有自己的白名单**，会把空值或陌生值原样写进配置（客户端不认）
+     *   ——tools/store-value-audit.php 实测确认
      * - 2022-blake3-* 尤其不能放：它的 server key 要由 created_at 派生，而外部节点没有 created_at，
      *   上面那几个渲染器在 ss2022 分支里是无守护读取 → **整份订阅 500**
      *
@@ -93,7 +95,7 @@ class ExtraSubscriptionService
      */
     private static $nodeValues = array(
         'shadowsocks' => array(
-            'cipher' => array('aes-128-gcm', 'aes-192-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305'),
+            'cipher' => Helper::SS_CIPHERS,
         ),
     );
 
