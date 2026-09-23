@@ -2,6 +2,7 @@
 
 namespace App\Protocols;
 
+use App\Utils\Helper;
 use phpDocumentor\Reflection\Types\Self_;
 use Symfony\Component\Yaml\Yaml;
 
@@ -57,11 +58,11 @@ class Clash
                 array_push($proxy, self::buildShadowsocks($uuid, $item));
                 array_push($proxies, $item['name']);
             }
-            if ($item['type'] === 'vmess') {
+            if ($item['type'] === 'vmess' && Helper::networkExpressible('clash', 'vmess', $item['network'] ?? null)) {
                 array_push($proxy, self::buildVmess($uuid, $item));
                 array_push($proxies, $item['name']);
             }
-            if ($item['type'] === 'trojan') {
+            if ($item['type'] === 'trojan' && Helper::networkExpressible('clash', 'trojan', $item['network'] ?? null)) {
                 array_push($proxy, self::buildTrojan($uuid, $item));
                 array_push($proxies, $item['name']);
             }

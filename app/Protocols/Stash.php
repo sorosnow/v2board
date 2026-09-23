@@ -50,15 +50,15 @@ class Stash
                 array_push($proxy, self::buildShadowsocks($uuid, $item));
                 array_push($proxies, $item['name']);
             }
-            if ($item['type'] === 'vmess') {
+            if ($item['type'] === 'vmess' && Helper::networkExpressible('clash', 'vmess', $item['network'] ?? null)) {
                 array_push($proxy, self::buildVmess($uuid, $item));
                 array_push($proxies, $item['name']);
             }
-            if ($item['type'] === 'vless') {
+            if ($item['type'] === 'vless' && Helper::networkExpressible('clash', 'vless', $item['network'] ?? null)) {
                 array_push($proxy, self::buildVless($uuid, $item));
                 array_push($proxies, $item['name']);
             }
-            if ($item['type'] === 'trojan') {
+            if ($item['type'] === 'trojan' && Helper::networkExpressible('clash', 'trojan', $item['network'] ?? null)) {
                 array_push($proxy, self::buildTrojan($uuid, $item));
                 array_push($proxies, $item['name']);
             }

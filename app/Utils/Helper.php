@@ -168,6 +168,67 @@ class Helper
         return strtr(rawurlencode($str), $revert);
     }
 
+    /**
+     * 渲染器能不能忠实表达这个传输方式（判断对象是**站点自建**节点）
+     *
+     * 附加订阅的外部节点在 SubscriptionParser 里已按同样的基准收窄过；但站点节点的 network 由后台
+     * 直接选择（vless / trojan 的服务端校验只有 required，任意字符串都能进库），而多数渲染器只在
+     * 特定传输下才写传输参数 → 表达不了的会被静默丢掉，客户端按 tcp 连 → 看着有节点却连不上。
+     * 表达不了就不产出该节点（与 sing-box / QuantumultX 既有的「跳过」做法一致）。
+     *
+     * 基准是逐格实测（tools/site-network-audit.php：把 network=X 的渲染结果与 network=tcp 逐行比对）：
+     *   clash 系（Clash / ClashMeta / ClashVerge / ClashNyanpasu / Stash）：
+     *       vmess、trojan 只认 tcp / ws / grpc；vless 另加 xhttp
+     *   surge / surfboard：vmess、trojan 只认 tcp / ws
+     *   loon / quantumultx：vmess、vless、trojan 只认 tcp / ws
+     *   shadowrocket：vmess 只认 tcp / ws / grpc（vless / trojan 走 Helper::buildUri，已知传输都忠实）
+     *   URI 类（V2rayN / V2rayNG / v2RayTun / General / Passwall / SagerNet / SSRPlus）已知传输都忠实，不登记
+     *
+     * 未登记的渲染器、以及不使用传输的协议（shadowsocks / hysteria / tuic / anytls）一律放行；
+     * 未登记的传输值一律不放行（库里可能有历史值或手改值，宁可少一个节点也不要坏节点）。
+     *
+     * @param string $client clash / surge / loon / quantumultx / shadowrocket
+     * @param string|null $type
+     * @param string|null $network
+     * @return bool
+     */
+    public static function networkExpressible($client, $type, $network)
+    {
+        if ($network === null || $network === '') {
+            $network = 'tcp';   // 库里 network 可空（v2_server_trojan.network 就是 DEFAULT NULL），空值等价于 tcp
+        }
+        $table = array(
+            'clash' => array(
+                'vmess' => array('tcp', 'ws', 'grpc'),
+                'vless' => array('tcp', 'ws', 'grpc', 'xhttp'),
+                'trojan' => array('tcp', 'ws', 'grpc'),
+            ),
+            'surge' => array(
+                'vmess' => array('tcp', 'ws'),
+                'trojan' => array('tcp', 'ws'),
+            ),
+            'loon' => array(
+                'vmess' => array('tcp', 'ws'),
+                'vless' => array('tcp', 'ws'),
+                'trojan' => array('tcp', 'ws'),
+            ),
+            'quantumultx' => array(
+                'vmess' => array('tcp', 'ws'),
+                'vless' => array('tcp', 'ws'),
+                'trojan' => array('tcp', 'ws'),
+            ),
+            'shadowrocket' => array(
+                'vmess' => array('tcp', 'ws', 'grpc'),
+                'vless' => array('tcp', 'ws', 'grpc', 'kcp', 'http', 'h2', 'domainsocket', 'quic', 'httpupgrade', 'xhttp'),
+                'trojan' => array('tcp', 'ws', 'grpc', 'kcp', 'http', 'h2', 'domainsocket', 'quic', 'httpupgrade', 'xhttp'),
+            ),
+        );
+        if (!isset($table[$client]) || !isset($table[$client][$type])) {
+            return true;
+        }
+        return in_array($network, $table[$client][$type], true);
+    }
+
     public static function buildUri($uuid, $server)
     {
         if ($server['type'] == 'v2node') {

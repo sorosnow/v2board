@@ -36,6 +36,8 @@ class Shadowrocket
             // 外部订阅节点使用其自身凭据；只写局部变量，不要写 $user['uuid']（那是共享的 Eloquent 模型）
             $uuid = isset($server['_credential']) && $server['_credential'] !== '' ? $server['_credential'] : $defaultUuid;
             if ($server['type'] === 'vmess' || ($server['type'] === 'v2node' && $server['protocol'] === 'vmess')) {
+                // Shadowrocket 的 vmess URI 只表达 tcp / ws / grpc；vless / trojan 走 Helper::buildUri（已知传输都忠实）
+                if (!Helper::networkExpressible('shadowrocket', 'vmess', $server['network'] ?? null)) continue;
                 $uri .= self::buildVmess($uuid, $server);
             } else {
                 $uri .= Helper::buildUri($uuid, $server);

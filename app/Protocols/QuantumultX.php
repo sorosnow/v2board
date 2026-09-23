@@ -36,9 +36,8 @@ class QuantumultX
                 $item['type'] = $item['protocol'];
             }
 
-            // 提前过滤不支持的传输协议 (QX 不支持 gRPC, HTTPUpgrade, XHTTP)
-            $network = $item['network'] ?? 'tcp';
-            if (in_array($network, ['grpc', 'httpupgrade', 'xhttp'])) {
+            // 提前过滤渲染器还原不了的传输（QX 只支持 tcp / ws；判定见 Helper::networkExpressible）
+            if (!Helper::networkExpressible('quantumultx', $item['type'] ?? null, $item['network'] ?? null)) {
                 continue;
             }
 

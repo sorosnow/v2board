@@ -36,11 +36,11 @@ class Loon
             }
             if ($item['type'] === 'shadowsocks') {
                 $uri .= self::buildShadowsocks($uuid, $item);
-            }elseif ($item['type'] === 'vmess' && (($item['network'] ?? null) !== 'grpc')) { //loon 不支持 grpc
+            }elseif ($item['type'] === 'vmess' && Helper::networkExpressible('loon', 'vmess', $item['network'] ?? null)) { //loon 只支持 tcp / ws
                 $uri .= self::buildVmess($uuid, $item);
-            }elseif ($item['type'] === 'vless' && (($item['network'] ?? null) === 'tcp' || ($item['network'] ?? null) === 'ws')) {
+            }elseif ($item['type'] === 'vless' && Helper::networkExpressible('loon', 'vless', $item['network'] ?? null)) {
                 $uri .= self::buildVless($uuid, $item);
-            }elseif ($item['type'] === 'trojan' && (($item['network'] ?? null) !== 'grpc')) {
+            }elseif ($item['type'] === 'trojan' && Helper::networkExpressible('loon', 'trojan', $item['network'] ?? null)) {
                 $uri .= self::buildTrojan($uuid, $item);
             }elseif ($item['type'] === 'hysteria' && $item['version'] === 2) { //loon只支持hysteria2
                 $uri .= self::buildHysteria($uuid, $item);

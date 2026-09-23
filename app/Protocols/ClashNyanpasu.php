@@ -52,14 +52,19 @@ class ClashNyanpasu
                     $proxies[] = $item['name'];
                     break;
                 case 'vmess':
+                    // 传输表达不了就不产出（否则客户端按 tcp 连 → 看着有节点却连不上）
+                    if (!Helper::networkExpressible('clash', 'vmess', $item['network'] ?? null)) break;
                     $proxy[] = self::buildVmess($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'vless':
+                    // xhttp 是本项目支持的（buildVless 里有分支），其余表达不了的传输不产出
+                    if (!Helper::networkExpressible('clash', 'vless', $item['network'] ?? null)) break;
                     $proxy[] = self::buildVless($uuid, $item);
                     $proxies[] = $item['name'];
                     break;
                 case 'trojan':
+                    if (!Helper::networkExpressible('clash', 'trojan', $item['network'] ?? null)) break;
                     $proxy[] = self::buildTrojan($uuid, $item);
                     $proxies[] = $item['name'];
                     break;

@@ -42,12 +42,12 @@ class Surge
                 $proxies .= self::buildShadowsocks($uuid, $item);
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
-            }elseif ($item['type'] === 'vmess' && (($item['network'] ?? null) !== 'grpc')) {
+            }elseif ($item['type'] === 'vmess' && Helper::networkExpressible('surge', 'vmess', $item['network'] ?? null)) {
                 // [Proxy]
                 $proxies .= self::buildVmess($uuid, $item);
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
-            }elseif ($item['type'] === 'trojan' && (($item['network'] ?? null) !== 'grpc')) { //surge 不支持 grpc
+            }elseif ($item['type'] === 'trojan' && Helper::networkExpressible('surge', 'trojan', $item['network'] ?? null)) { //surge 只支持 tcp / ws
                 // [Proxy]
                 $proxies .= self::buildTrojan($uuid, $item);
                 // [Proxy Group]
