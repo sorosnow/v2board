@@ -25,9 +25,6 @@ class Shadowsocks
 
         $configs = [];
         $subs = [];
-        $subs['servers'] = [];
-        $subs['bytes_used'] = '';
-        $subs['bytes_remaining'] = '';
 
         $bytesUsed = $user['u'] + $user['d'];
         $bytesRemaining = $user['transfer_enable'] - $bytesUsed;
@@ -45,7 +42,7 @@ class Shadowsocks
         $subs['version'] = 1;
         $subs['bytes_used'] = $bytesUsed;
         $subs['bytes_remaining'] = $bytesRemaining;
-        $subs['servers'] = array_merge($subs['servers'] ? $subs['servers'] : [], $configs);
+        $subs['servers'] = $configs;
 
         return json_encode($subs, JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT);
     }
@@ -53,7 +50,7 @@ class Shadowsocks
     public static function SIP008($server, $uuid)
     {
         $config = [
-            "id" => isset($server['id']) ? $server['id'] : 0,
+            "id" => $server['id'] ?? 0,
             "remarks" => $server['name'],
             "server" => $server['host'],
             "server_port" => $server['port'],
