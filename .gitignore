@@ -6,6 +6,7 @@
 /public/favicon.ico
 /public/assets/admin/custom.css
 /storage/*.key
+/storage/app/extra-subscribe.json*
 /vendor
 .env
 .env.backup

@@ -4,68 +4,63 @@ namespace App\Services;
 
 use App\Utils\SubscriptionParser;
 use GuzzleHttp\Client;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
  * 额外订阅（附加节点）服务
  *
- * 把后台「额外订阅链接」里的节点追加到本站节点列表后面下发
- * （custom_subscribe_url 是「替换」语义，两者不同）。
+ * 架构：拉取与下发分离
+ *  - refresh()：由定时任务（extra:subscribe，每分钟）拉取第三方 → 解析 → 落盘
+ *  - merge()：用户订阅请求里**只读本地文件**，绝不发起 HTTP
+ *    好处：用户请求不再被第三方拖慢；第三方挂掉/抖动时仍继续下发上一次成功的结果
  *
- * 要点：
- *  - `extra_subscribe_url` 一行一条（回车换行，不支持逗号），每条独立缓存
- *  - 缓存 key = `extra_subscribe_<md5(url)>`，值是解析后的节点列表，
- *    TTL = `extra_subscribe_cache_ttl`（默认 300，最小 30）；
- *    另有防击穿占位锁 `<同上>_fetching`（TTL 60）
- *  - 保存后台配置会调 forgetCache()，故改链接 / TTL / 超时后立即生效
- *  - 按节点名去重、本站优先；附加节点保留自身 `_credential`
- *  - 拉取失败 / 未配置 / 未开启：静默降级，只下发本站节点
- *  - 仅用于「下发本站节点」的路径；custom_subscribe_url 走「替换」通道，
- *    不得调用本服务，否则异常用户仍能拿到可用的第三方节点
+ * 存储：storage/app/extra-subscribe.json（单机文件；写入用「临时文件 + rename」保证原子，
+ * 读方永远看不到写一半的内容），每条链接一份：
+ *  nodes / node_count / skipped / error / last_attempt_at / last_success_at
+ *  - 拉取失败只写 error 与 last_attempt_at，**不动 nodes**（旧节点继续下发）
+ *  - 刷新间隔 = extra_subscribe_cache_ttl（默认 300，最小 30）；失败后 FAIL_RETRY_TTL(60s) 重试
+ *  - 解析不出节点的响应（空 body / 非订阅内容）同样按失败处理，避免清空已下发的节点
+ *  - 上一次成功超过 MAX_STALE_TTL(7 天) 则不再下发，避免长期下发一堆死节点
+ *  - 配置里删掉的链接，会在下次刷新时从文件里清掉
  *
- * 防护：Cache::add 原子占位防击穿；多条并发拉取（总耗时约最慢一条）；
- *      不用函数式 promise API（promises 2.0 已移除 settle()/all()，而
- *      guzzle ^7.4.3 新装会解析到 2.x），改为逐个 wait()；
- *      merge() 兜住所有 Throwable，附加订阅任何异常都不影响主订阅。
- *      内网段 SSRF 检查已按站长决策移除，scheme 白名单保留。
+ * 安全：文件在 storage 下（非 web 目录），内容含第三方节点凭据（与配置里的链接同等级）；
+ *      日志里链接一律打码。内网 SSRF 检查按站长决策移除，保留 http/https 白名单。
  *
  * 本项目要求 php ^7.3.0，禁用 7.4+ 语法。
  */
 class ExtraSubscriptionService
 {
-    /** 缓存键前缀 */
-    const CACHE_KEY_PREFIX = 'extra_subscribe_';
+    /** 落盘文件名（storage/app 下） */
+    const STORE_FILE = 'extra-subscribe.json';
 
     /** 响应体大小上限（字节） */
     const MAX_BODY_BYTES = 2097152; // 2MB
 
-    /** 缓存最短 TTL（秒） */
+    /** 刷新间隔下限（秒） */
     const MIN_CACHE_TTL = 30;
 
-    /** 拉取占位锁 TTL（秒）；持有者完成后主动释放，残留过期仅作崩溃兜底 */
-    const FETCH_LOCK_TTL = 60;
+    /** 拉取失败后的重试间隔（秒） */
+    const FAIL_RETRY_TTL = 60;
 
-    /** 拉取失败时的缓存 TTL（秒）：上游抖一下也会写入空结果，用短 TTL 让它在
-     *  1 分钟内自动恢复重试，而不是缺席整个 TTL */
-    const FAIL_CACHE_TTL = 60;
+    /** 上一次成功的结果最长沿用（秒） */
+    const MAX_STALE_TTL = 604800; // 7 天
 
-    /** 链接条数上限（超出丢弃并记 warning） */
+    /** 链接条数上限（超出只取前几条并记 warning） */
     const MAX_URLS = 10;
 
     /**
-     * 把「额外订阅」的节点合并进本站节点列表
+     * 把「额外订阅」的节点合并进本站节点列表（用户请求路径：只读本地，不发 HTTP）
      *
-     * @param  array $servers 本站可用节点（getAvailableServers 的结果）
+     * @param  array $servers 本站可用节点
      * @return array
      */
     public function merge(array $servers)
     {
         // 附加订阅不允许影响本站节点下发：兜住所有 Throwable（含依赖不兼容的 PHP Error）
         try {
-            $nodes = $this->fetchNodes();
+            $nodes = $this->nodes();
         } catch (\Throwable $e) {
-            Log::warning('extra subscribe: merge failed - ' . $e->getMessage());
+            Log::warning('extra subscribe: read store failed - ' . $e->getMessage());
             return $servers;
         }
 
@@ -117,14 +112,122 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 拉取并解析附加订阅节点（多条链接各自独立缓存）
+     * 拉取并落盘（供定时任务 / 手动执行调用）
      *
-     * ① 逐条读缓存；miss 的先原子占位，占位失败的本轮跳过
-     * ② 所有 miss 并发拉取，各自解析后写回缓存
+     * @param  bool $force 忽略刷新间隔，强制全部重拉
+     * @return array ['refreshed' => 成功条数, 'failed' => 失败条数, 'nodes' => 节点数,
+     *                'skipped' => 是否因「已有实例在跑」而整体跳过]
+     */
+    public function refresh($force = false)
+    {
+        $summary = array('refreshed' => 0, 'failed' => 0, 'nodes' => 0, 'skipped' => false);
+
+        if (!(int)config('v2board.extra_subscribe_enable', 0)) {
+            return $summary;
+        }
+
+        $urls = $this->urls();
+        if (!$urls) {
+            return $summary;
+        }
+
+        // 同一时刻只允许一个实例真正拉取（定时任务与手动执行可能撞上）
+        $lock = $this->lockStore();
+        if (!$lock) {
+            $summary['skipped'] = true;
+            Log::debug('extra subscribe: refresh skipped, another run is in progress');
+            return $summary;
+        }
+
+        try {
+            $store = $this->loadStore();
+            $now = time();
+            $ttl = $this->cacheTtl();
+
+            // 配置里已删除的链接：从文件里清掉
+            $keep = array();
+            foreach ($urls as $url) {
+                $keep[md5($url)] = true;
+            }
+            if (!empty($store['urls']) && is_array($store['urls'])) {
+                foreach (array_keys($store['urls']) as $key) {
+                    if (!isset($keep[$key])) {
+                        unset($store['urls'][$key]);
+                    }
+                }
+            }
+
+            // 该刷新哪些：没数据 / 已过刷新间隔 / 上次失败已过重试间隔
+            $due = array();
+            foreach ($urls as $url) {
+                $key = md5($url);
+                $row = isset($store['urls'][$key]) ? $store['urls'][$key] : null;
+                if ($force || $this->isDue($row, $now, $ttl)) {
+                    $due[$url] = $key;
+                }
+            }
+
+            if ($due) {
+                $this->fetchInto($store, $due, $now);
+                foreach ($due as $url => $key) {
+                    if (empty($store['urls'][$key]['error'])) {
+                        $summary['refreshed']++;
+                        $summary['nodes'] += (int)$store['urls'][$key]['node_count'];
+                    } else {
+                        $summary['failed']++;
+                    }
+                }
+            }
+
+            $this->saveStore($store);
+        } catch (\Throwable $e) {
+            Log::warning('extra subscribe: refresh failed - ' . $e->getMessage());
+        } finally {
+            $this->unlockStore($lock);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * 当前各链接的状态（供命令展示）
      *
      * @return array
      */
-    public function fetchNodes()
+    public function status()
+    {
+        $store = $this->loadStore();
+        $now = time();
+        $rows = array();
+
+        foreach ($this->urls() as $url) {
+            $key = md5($url);
+            $row = isset($store['urls'][$key]) ? $store['urls'][$key] : array();
+            $lastSuccess = isset($row['last_success_at']) ? (int)$row['last_success_at'] : null;
+            $rows[] = array(
+                'url'             => $this->maskUrl($url),
+                'node_count'      => isset($row['node_count']) ? (int)$row['node_count'] : 0,
+                'last_success_at' => $lastSuccess,
+                'last_attempt_at' => isset($row['last_attempt_at']) ? (int)$row['last_attempt_at'] : null,
+                'error'           => isset($row['error']) ? $row['error'] : null,
+                // 超过 MAX_STALE_TTL 后即使有节点也不会再下发
+                'serving'         => $lastSuccess !== null && $lastSuccess + self::MAX_STALE_TTL >= $now,
+            );
+        }
+
+        return $rows;
+    }
+
+    /* ------------------------------------------------------------------
+     |  下发路径（只读本地）
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 读取本地存储里的附加节点（不发任何请求）
+     *
+     * @return array
+     */
+    private function nodes()
     {
         if (!(int)config('v2board.extra_subscribe_enable', 0)) {
             return array();
@@ -135,145 +238,242 @@ class ExtraSubscriptionService
             return array();
         }
 
-        $ttl = (int)config('v2board.extra_subscribe_cache_ttl', 300);
-        if ($ttl < self::MIN_CACHE_TTL) {
-            $ttl = self::MIN_CACHE_TTL;
-        }
-
-        $results = array();
-        $misses = array(); // url => cacheKey
+        $store = $this->loadStore();
+        $now = time();
+        $nodes = array();
 
         foreach ($urls as $url) {
-            // 每条独立缓存：一条挂掉不影响其他条
-            $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
-
-            // 不能用 Cache::remember：失败时缓存 null 会被当成 miss 反复重试
-            $cached = Cache::get($cacheKey);
-            if ($cached !== null) {
-                $results[] = $cached;
+            $key = md5($url);
+            if (empty($store['urls'][$key]['nodes']) || !is_array($store['urls'][$key]['nodes'])) {
                 continue;
             }
-
-            // 防击穿：Cache::add 原子占位，同一时刻只有一个请求真正去拉取
-            if (Cache::add($cacheKey . '_fetching', 1, self::FETCH_LOCK_TTL)) {
-                $misses[$url] = $cacheKey;
+            $row = $store['urls'][$key];
+            $lastSuccess = (int)(isset($row['last_success_at']) ? $row['last_success_at'] : 0);
+            // 上一次成功太久之前：宁可不发，也不下发一堆早已失效的节点
+            if ($lastSuccess + self::MAX_STALE_TTL < $now) {
+                continue;
+            }
+            foreach ($row['nodes'] as $node) {
+                $nodes[] = $node;
             }
         }
 
-        if ($misses) {
-            $this->fetchConcurrent($misses, $ttl);
-
-            // 回读本轮写入的缓存（含失败写入的空结果）
-            foreach ($misses as $url => $cacheKey) {
-                $cached = Cache::get($cacheKey);
-                if ($cached !== null) {
-                    $results[] = $cached;
-                }
-            }
-        }
-
-        $nodes = array();
-        foreach ($results as $cached) {
-            if (!empty($cached['nodes'])) {
-                foreach ($cached['nodes'] as $node) {
-                    $nodes[] = $node;
-                }
-            }
-        }
-
-        // 跨链接重名交给 merge() 按名去重
         return $nodes;
     }
 
-    /**
-     * 清掉额外订阅缓存（保存后台配置后调用）
-     *
-     * 每条链接要清两个 key：节点缓存 `extra_subscribe_<md5(url)>` 与
-     * 占位锁 `<同上>_fetching`。
-     *
-     * ConfigController::save() 会把旧、新链接都传进来，所以正常改链接 /
-     * TTL / 超时都不会留残留；只有绕过 save() 改配置（直接改 config 文件、
-     * tinker、恢复备份等）时旧 URL 的条目才成为「孤儿」——读不到、不影响
-     * 正确性，最多一个 TTL 后自然过期。
-     *
-     * @param  string|null $raw 多行链接配置；不传则读当前 config
-     * @return int 清掉的链接条数
-     */
-    public function forgetCache($raw = null)
-    {
-        $urls = $this->urls($raw);
-
-        foreach ($urls as $url) {
-            $cacheKey = self::CACHE_KEY_PREFIX . md5($url);
-            Cache::forget($cacheKey);
-            Cache::forget($cacheKey . '_fetching');
-        }
-
-        return count($urls);
-    }
+    /* ------------------------------------------------------------------
+     |  拉取路径（只在定时任务 / 手动执行时跑）
+     * ------------------------------------------------------------------ */
 
     /**
-     * 并发拉取 miss 链接并写回各自缓存（总耗时约最慢一条）
+     * 并发拉取 due 里的链接，并把结果写回 $store（失败保留原 nodes）
      *
-     * 校验不通过的 URL 不发请求，直接按失败缓存空结果。
-     *
-     * @param array $misses url => cacheKey
-     * @param int   $ttl
+     * @param array $store 引用
+     * @param array $due   url => cacheKey
+     * @param int   $now
      */
-    private function fetchConcurrent(array $misses, $ttl)
+    private function fetchInto(&$store, $due, $now)
     {
         $client = new Client();
         $promises = array();
-        $empty = array('nodes' => array(), 'skipped' => array());
-        // 失败（含超限、非法 URL）写短 TTL，避免一次抖动就让该链接缺席整个 TTL
-        $failTtl = min($ttl, self::FAIL_CACHE_TTL);
 
-        foreach ($misses as $url => $cacheKey) {
-            // 仅允许 http/https；不通过则不请求，直接按失败缓存
+        foreach ($due as $url => $key) {
+            // 仅允许 http/https；不通过则不请求，直接按失败记录
             if (!$this->isUrlAllowed($url)) {
-                Cache::put($cacheKey, $empty, $failTtl);
-                Cache::forget($cacheKey . '_fetching');
+                $store['urls'][$key] = $this->failRow($store, $key, $url, $now, 'url not allowed');
                 continue;
             }
             $promises[$url] = $client->getAsync($url, $this->requestOptions());
-        }
-
-        if (!$promises) {
-            return;
         }
 
         // 不用 \GuzzleHttp\Promise\settle()：函数式 API 在 promises 2.0 已移除，
         // 而 guzzle ^7.4.3 新装会解析到 2.x，调用即 undefined function。
         // 逐个 wait()：请求已在同一 curl_multi 中，并发性不受影响，单条失败不影响其他条。
         foreach ($promises as $url => $promise) {
-            $cacheKey = $misses[$url];
+            $key = $due[$url];
 
             try {
-                $response = $promise->wait();
-                $body = $this->readBody($response->getBody());
+                $body = $this->readBody($promise->wait()->getBody());
                 if ($body === null) {
                     Log::warning('extra subscribe: response too large - ' . $this->maskUrl($url));
-                    Cache::put($cacheKey, $empty, $failTtl);
-                } else {
-                    $parsed = SubscriptionParser::parse($body);
-                    // 无条件记录节点数：成功但 0 节点时也要有日志，否则排查是黑盒
-                    Log::debug('extra subscribe: got ' . count($parsed['nodes']) . ' node(s), '
-                        . strlen($body) . ' bytes, skipped=' . json_encode($parsed['skipped'])
-                        . ' - ' . $this->maskUrl($url));
-                    Cache::put($cacheKey, $parsed, $ttl);
+                    $store['urls'][$key] = $this->failRow($store, $key, $url, $now, 'response too large');
+                    continue;
                 }
+
+                $parsed = SubscriptionParser::parse($body);
+                // 无条件记录节点数：成功但 0 节点时也要有日志，否则排查是黑盒
+                Log::debug('extra subscribe: got ' . count($parsed['nodes']) . ' node(s), '
+                    . strlen($body) . ' bytes, skipped=' . json_encode($parsed['skipped'])
+                    . ' - ' . $this->maskUrl($url));
+
+                if (!$parsed['nodes']) {
+                    // 解析不出节点（空 body / 非 URI 列表等）：按失败处理，
+                    // 保留上一次成功的结果，别让一次抖动把已下发的节点清空
+                    $store['urls'][$key] = $this->failRow($store, $key, $url, $now, 'no nodes parsed');
+                    continue;
+                }
+
+                $store['urls'][$key] = array(
+                    'url'             => $url,
+                    'nodes'           => $parsed['nodes'],
+                    'node_count'      => count($parsed['nodes']),
+                    'skipped'         => $parsed['skipped'],
+                    'error'           => null,
+                    'last_attempt_at' => $now,
+                    'last_success_at' => $now,
+                );
             } catch (\Throwable $e) {
-                // Guzzle 异常消息里带完整 URL（含 token），先打码再落日志
-                $message = str_replace($url, $this->maskUrl($url), $e->getMessage());
-                Log::warning('extra subscribe: fetch failed - ' . $message);
-                // 失败也写缓存（空结果，短 TTL），避免持续打第三方
-                Cache::put($cacheKey, $empty, $failTtl);
-            } finally {
-                // 主动释放占位，异常终止时下一轮可立即重试
-                Cache::forget($cacheKey . '_fetching');
+                // Guzzle 异常消息里带完整 URL（含 token）：整条消息里的 URL 一律打码后再落日志
+                $reason = $this->maskText($e->getMessage());
+                Log::warning('extra subscribe: fetch failed - ' . $this->maskUrl($url) . ' - ' . $reason);
+                $store['urls'][$key] = $this->failRow($store, $key, $url, $now, $reason);
             }
         }
     }
+
+    /**
+     * 构造「失败」记录：保留上一次成功的 nodes，只更新 error 与 last_attempt_at
+     *
+     * @return array
+     */
+    private function failRow($store, $key, $url, $now, $error)
+    {
+        $old = isset($store['urls'][$key]) ? $store['urls'][$key] : array();
+        return array(
+            'url'             => $url,
+            'nodes'           => (isset($old['nodes']) && is_array($old['nodes'])) ? $old['nodes'] : array(),
+            'node_count'      => isset($old['node_count']) ? (int)$old['node_count'] : 0,
+            'skipped'         => isset($old['skipped']) ? $old['skipped'] : array(),
+            'error'           => (string)$error,
+            'last_attempt_at' => $now,
+            'last_success_at' => isset($old['last_success_at']) ? $old['last_success_at'] : null,
+        );
+    }
+
+    /**
+     * 该条链接是否到了该刷新的时间
+     *
+     * @param  array|null $row
+     * @param  int        $now
+     * @param  int        $ttl
+     * @return bool
+     */
+    private function isDue($row, $now, $ttl)
+    {
+        if (!is_array($row)) {
+            return true; // 从没拉过
+        }
+        $last = (int)(isset($row['last_attempt_at']) ? $row['last_attempt_at'] : 0);
+        // 上次失败：短间隔重试；上次成功：按配置的刷新间隔
+        $wait = empty($row['error']) ? $ttl : min($ttl, self::FAIL_RETRY_TTL);
+
+        return $last + $wait <= $now;
+    }
+
+    /* ------------------------------------------------------------------
+     |  本地存储
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 存储文件路径
+     *
+     * @return string
+     */
+    private function storePath()
+    {
+        return storage_path('app/' . self::STORE_FILE);
+    }
+
+    /**
+     * 读取存储文件（不存在 / 损坏一律当空处理，不影响本站节点下发）
+     *
+     * @return array
+     */
+    private function loadStore()
+    {
+        $empty = array('version' => 1, 'urls' => array());
+        $path = $this->storePath();
+        if (!is_file($path)) {
+            return $empty;
+        }
+        $raw = @file_get_contents($path);
+        if ($raw === false || trim($raw) === '') {
+            return $empty;
+        }
+        $data = json_decode($raw, true);
+        if (!is_array($data) || !isset($data['urls']) || !is_array($data['urls'])) {
+            Log::warning('extra subscribe: store file is broken, treat as empty');
+            return $empty;
+        }
+
+        return $data;
+    }
+
+    /**
+     * 写存储文件：先写临时文件再 rename（原子替换）
+     *
+     * @param  array $store
+     * @return bool
+     */
+    private function saveStore($store)
+    {
+        $path = $this->storePath();
+        $json = json_encode($store, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            Log::warning('extra subscribe: encode store failed');
+            return false;
+        }
+        $tmp = $path . '.tmp';
+        if (@file_put_contents($tmp, $json) === false) {
+            Log::warning('extra subscribe: write store failed');
+            return false;
+        }
+        if (!@rename($tmp, $path)) {
+            @unlink($tmp);
+            Log::warning('extra subscribe: replace store failed');
+            return false;
+        }
+        // 本文件由定时任务（可能是 root）写、由 web 用户读：
+        // 万一写入方 umask 是 0077，会变成 0600 导致 web 读不到，这里显式放开读权限
+        @chmod($path, 0644);
+
+        return true;
+    }
+
+    /**
+     * 取独占锁（拿不到说明已有实例在拉，直接跳过本轮）
+     *
+     * @return resource|null
+     */
+    private function lockStore()
+    {
+        $fp = @fopen($this->storePath() . '.lock', 'c');
+        if (!$fp) {
+            return null;
+        }
+        if (!@flock($fp, LOCK_EX | LOCK_NB)) {
+            fclose($fp);
+            return null;
+        }
+
+        return $fp;
+    }
+
+    /**
+     * @param resource|null $fp
+     */
+    private function unlockStore($fp)
+    {
+        if (!$fp) {
+            return;
+        }
+        @flock($fp, LOCK_UN);
+        @fclose($fp);
+    }
+
+    /* ------------------------------------------------------------------
+     |  配置与请求
+     * ------------------------------------------------------------------ */
 
     /**
      * 读取额外订阅链接配置，拆分为去重后的数组
@@ -281,7 +481,7 @@ class ExtraSubscriptionService
      * 一行一条（回车换行，不支持逗号）；只做拆分 / 去重 / 限流，
      * 合法性交给 isUrlAllowed()。历史槽位键 _1/_2 不再读取。
      *
-     * @param  string|null $raw 不传则读当前配置（传参用于清理旧配置的缓存）
+     * @param  string|null $raw 不传则读当前配置
      * @return array
      */
     private function urls($raw = null)
@@ -312,6 +512,18 @@ class ExtraSubscriptionService
         }
 
         return $urls;
+    }
+
+    /**
+     * 刷新间隔（秒）
+     *
+     * @return int
+     */
+    private function cacheTtl()
+    {
+        $ttl = (int)config('v2board.extra_subscribe_cache_ttl', 300);
+
+        return $ttl < self::MIN_CACHE_TTL ? self::MIN_CACHE_TTL : $ttl;
     }
 
     /**
@@ -347,8 +559,7 @@ class ExtraSubscriptionService
         if ($timeout < 3) {
             $timeout = 3;
         }
-        // 上限 10s：本超时是在订阅请求里同步等待的，设太大（如 60s）会把用户这次
-        // 请求拖到客户端自身超时之后 -> 客户端报「更新订阅失败」，而本站节点其实是好的
+        // 上限 10s：本超时只在定时任务里等待，无需再长
         if ($timeout > 10) {
             $timeout = 10;
         }
@@ -357,8 +568,7 @@ class ExtraSubscriptionService
             'timeout'         => $timeout,
             'connect_timeout' => $timeout,
             // 不要加 'stream' => true：stream 模式下 promise 收到响应头就 resolve，
-            // 异步时 body 尚未写入流，readBody() 读到空串 -> 0 节点且空结果缓存整个 TTL
-            // （表现为节点凭空消失）。代价：响应体先落 php://temp，大小上限只作用于解析。
+            // 异步时 body 尚未写入流，readBody() 读到空串 -> 0 节点
             'headers'         => array(
                 'User-Agent' => 'v2board-extra-subscribe/1.0',
                 'Accept'     => 'text/plain, */*',
@@ -386,6 +596,7 @@ class ExtraSubscriptionService
                 return null;
             }
         }
+
         return $body;
     }
 
@@ -411,5 +622,19 @@ class ExtraSubscriptionService
         }
 
         return $masked;
+    }
+
+    /**
+     * 把一段文本里的所有 http(s) 地址打码
+     *
+     * 异常消息里出现的 URL 可能是跳转后的最终地址（与请求时的原始串不同），
+     * 所以不能只做 str_replace($url, ...)，否则 token 会明文进日志。
+     *
+     * @param  string $text
+     * @return string
+     */
+    private function maskText($text)
+    {
+        return preg_replace('#https?://[^\s"\'<>()]+#i', '(url masked)', (string)$text);
     }
 }

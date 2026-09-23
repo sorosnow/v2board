@@ -41,6 +41,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('reset:log')->daily();
         // send
         $schedule->command('send:remindMail')->dailyAt('11:30');
+        // extra subscribe（附加订阅：预取到本地，订阅下发时只读本地）
+        $schedule->command('extra:subscribe')->everyMinute()->withoutOverlapping();
         // horizon metrics
         $schedule->command('horizon:snapshot')->everyFiveMinutes();
     }

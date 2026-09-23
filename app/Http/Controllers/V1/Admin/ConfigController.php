@@ -5,7 +5,6 @@ namespace App\Http\Controllers\V1\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ConfigSave;
 use App\Jobs\SendEmailJob;
-use App\Services\ExtraSubscriptionService;
 use App\Services\TelegramService;
 use App\Utils\Dict;
 use Illuminate\Http\Request;
@@ -206,8 +205,6 @@ class ConfigController extends Controller
     public function save(ConfigSave $request)
     {
         $data = $request->validated();
-        // 额外订阅节点缓存与配置强相关：先记下保存前的链接，稍后一并清理
-        $oldExtraSubscribeUrl = (string)config('v2board.extra_subscribe_url');
         $config = config('v2board');
         foreach (ConfigSave::RULES as $k => $v) {
             if (!in_array($k, array_keys(ConfigSave::RULES))) {
@@ -229,13 +226,9 @@ class ConfigController extends Controller
         }
         Artisan::call('config:cache');
 
-        // 额外订阅节点缓存与配置强相关（改了链接/TTL/超时都应立即生效）：
-        // 新旧链接的缓存都要清，否则改完还会命中旧结果，得等 TTL 过期才生效
-        $extraSubscribe = new ExtraSubscriptionService();
-        $extraSubscribe->forgetCache($oldExtraSubscribeUrl);
-        // 注意用 $config（合并后的数组）：上面 $data 已被 var_export 覆盖成字符串，
-        // 对字符串做 isset($str['额外订阅键']) 恒为 false，这句会成为死代码
-        $extraSubscribe->forgetCache(isset($config['extra_subscribe_url']) ? $config['extra_subscribe_url'] : '');
+        // 附加订阅的结果由定时任务 extra:subscribe 预取到
+        // storage/app/extra-subscribe.json，订阅下发只读本地；
+        // 改了链接/TTL/超时后，最多 1 分钟由下一轮任务生效（也可手动跑该命令）
         if(Cache::has('WEBMANPID')) {
             $pid = Cache::get('WEBMANPID');
             Cache::forget('WEBMANPID');
