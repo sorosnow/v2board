@@ -26,7 +26,7 @@
 
 # **V2Board**
 
-- PHP7.3+
+- PHP8.0+
 - Composer
 - MySQL5.5+
 - Redis

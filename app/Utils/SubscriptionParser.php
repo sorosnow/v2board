@@ -14,7 +14,7 @@ namespace App\Utils;
  *  - ss-2022 主动跳过：其 server key 需由 created_at 派生（Helper::getServerKey），
  *    第三方节点的 created_at 不可知，下发只会产出连不上的节点
  *
- * 语法上限 PHP 7.4：可用箭头函数 / 类型化属性 / ??= 等 7.4 写法，不写 8.0+ 语法。
+ * 语法上限 PHP 8.0（composer.json 要求 ^8.0）：可用 8.0 写法，不用 8.1+ 特性。
  */
 class SubscriptionParser
 {
