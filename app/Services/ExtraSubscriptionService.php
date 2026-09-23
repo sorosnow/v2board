@@ -28,7 +28,8 @@ use Illuminate\Support\Facades\Log;
  * 安全：文件在 storage 下（非 web 目录），内容含第三方节点凭据（与配置里的链接同等级）；
  *      日志里链接一律打码。内网 SSRF 检查按站长决策移除，保留 http/https 白名单。
  *
- * 本项目要求 php ^7.3.0，禁用 7.4+ 语法。
+ * 语法上限 PHP 7.4：可用箭头函数 / 类型化属性 / ??= 等 7.4 写法，
+ * 不写 8.0+ 语法（match / ?-> / 构造器属性提升 等），这样 7.4 与 8.x 都能跑。
  */
 class ExtraSubscriptionService
 {
