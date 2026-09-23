@@ -42,7 +42,9 @@ class Kernel extends ConsoleKernel
         // send
         $schedule->command('send:remindMail')->dailyAt('11:30');
         // extra subscribe（附加订阅：预取到本地，订阅下发时只读本地）
-        $schedule->command('extra:subscribe')->everyMinute()->withoutOverlapping();
+        // 互斥 5 分钟（默认 1440）：进程被硬杀时调度器那把缓存锁不会立刻释放，
+        // 而本命令最坏几秒就能跑完，过期时间设小才不会长期不刷新
+        $schedule->command('extra:subscribe')->everyMinute()->withoutOverlapping(5);
         // horizon metrics
         $schedule->command('horizon:snapshot')->everyFiveMinutes();
     }

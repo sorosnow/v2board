@@ -53,6 +53,18 @@ class SubscriptionParser
     );
 
     /**
+     * 渲染器能忠实还原的传输方式
+     *
+     * Clash 系（Clash/ClashMeta/ClashVerge/ClashNyanpasu/Stash）与 sing-box 都只在
+     * ws / grpc 时才写 network（tcp 是缺省），h2 / http / httpupgrade / kcp / quic /
+     * domainsocket 会被**静默丢掉** → 客户端按 tcp 连 → 必然失败且看不出原因。
+     * vless 额外支持 xhttp（ClashMeta::buildVless 有对应分支），见 networkAllowed() 第二参。
+     *
+     * @var array
+     */
+    private static $networks = array('tcp', 'ws', 'grpc');
+
+    /**
      * 跳过原因计数
      *
      * @var array
@@ -258,6 +270,23 @@ class SubscriptionParser
      * @param  string $uri
      * @return array|null
      */
+    /**
+     * 传输方式白名单：不支持的直接丢弃（原样下发只会得到「按 tcp 连」的坏节点）
+     *
+     * @param  string $network
+     * @param  array  $extra 额外允许的传输（目前只有 vless 的 xhttp）
+     * @return bool
+     */
+    private static function networkAllowed($network, $extra = array())
+    {
+        if (in_array($network, self::$networks, true) || in_array($network, $extra, true)) {
+            return true;
+        }
+        self::skip('unsupported_network:' . $network);
+
+        return false;
+    }
+
     private static function parseVmess($uri)
     {
         $body = self::stripScheme($uri);
@@ -290,6 +319,9 @@ class SubscriptionParser
             'allowInsecure'  => isset($cfg['allowInsecure']) ? (int)$cfg['allowInsecure'] : 0,
         );
         $network = !empty($cfg['net']) ? $cfg['net'] : 'tcp';
+        if (!self::networkAllowed($network)) {
+            return null;
+        }
         $networkSettings = self::vmessNetworkSettings($cfg, $network);
 
         $node = self::base('vmess', $name, $cfg['add'], $cfg['port'], $cfg['id']);
@@ -353,6 +385,10 @@ class SubscriptionParser
         }
 
         $network = !empty($query['type']) ? $query['type'] : 'tcp';
+        // vless 额外允许 xhttp（ClashMeta::buildVless 有对应分支）
+        if (!self::networkAllowed($network, array('xhttp'))) {
+            return null;
+        }
         $networkSettings = self::uriNetworkSettings($query, $network);
 
         $node = self::base('vless', $name, $hp[0], $hp[1], $credential);
@@ -404,6 +440,9 @@ class SubscriptionParser
             : (isset($query['insecure']) ? self::bool01($query['insecure']) : 0);
 
         $network = !empty($query['type']) ? $query['type'] : 'tcp';
+        if (!self::networkAllowed($network)) {
+            return null;
+        }
         $networkSettings = self::uriNetworkSettings($query, $network);
         $tlsSettings = array(
             'server_name'    => $sni,
@@ -614,6 +653,9 @@ class SubscriptionParser
         }
 
         $network = !empty($query['type']) ? $query['type'] : 'tcp';
+        if (!self::networkAllowed($network)) {
+            return null;
+        }
         $networkSettings = self::uriNetworkSettings($query, $network);
 
         $node = self::base('anytls', $name, $hp[0], $hp[1], $credential);
