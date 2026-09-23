@@ -295,9 +295,9 @@ class SubscriptionParser
      * 两者是同一个传输的两种拼写（Xray 的配置里 xhttpSettings 与 splithttpSettings 是同一个
      * 结构体），所以只在这一层归一：归一后渲染器拿到的是它们本来就有的名字。
      *
-     * ⚠️ 别把别名写进 self::$networks，也别往后台表单里加：渲染器没有这两个分支，
-     *    走 Helper::networkExpressible 会被判否 —— 等于把节点从「能忠实下发」改成
-     *    「静默不下发」；未登记该传输的客户端还会按 tcp 连（坏节点）。
+     * 别把别名写进 self::$networks，也别往后台表单里加：渲染器没有这两个分支，
+     * 走 Helper::networkExpressible 会被判否 —— 等于把节点从「能忠实下发」改成
+     * 「静默不下发」；未登记该传输的客户端还会按 tcp 连（坏节点）。
      *
      * @var array
      */
