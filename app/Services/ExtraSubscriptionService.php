@@ -22,7 +22,8 @@ use Illuminate\Support\Facades\Log;
  *    该配置键名是历史遗留（原来是 Redis 缓存 TTL），语义就是「多久去刷新一次」，
  *    键名不变以免动后台与线上已有配置；拉取失败后按 FAIL_RETRY_TTL(60s) 重试
  *  - 解析不出节点的响应（空 body / 非订阅内容）同样按失败处理，避免清空已下发的节点
- *  - 上一次成功超过 MAX_STALE_TTL(7 天) 则不再下发，避免长期下发一堆死节点
+ *  - 上一次成功太久（默认 MAX_STALE_TTL=7 天，且不短于刷新间隔的 3 倍）就不再下发，
+ *    避免长期下发一堆死节点；两者取大是为了防止「间隔比它长」时节点在两次刷新间静默消失
  *  - 配置里删掉的链接，会在下次刷新时从文件里清掉
  *
  * 安全：文件在 storage 下（非 web 目录），内容含第三方节点凭据（与配置里的链接同等级）；
@@ -215,8 +216,8 @@ class ExtraSubscriptionService
                 'last_success_at' => $lastSuccess,
                 'last_attempt_at' => isset($row['last_attempt_at']) ? (int)$row['last_attempt_at'] : null,
                 'error'           => isset($row['error']) ? $row['error'] : null,
-                // 超过 MAX_STALE_TTL 后即使有节点也不会再下发
-                'serving'         => $lastSuccess !== null && $lastSuccess + self::MAX_STALE_TTL >= $now,
+                // 与 nodes() 用同一套判据，否则命令行会谎报「当前下发」状态
+                'serving'         => $lastSuccess !== null && $lastSuccess + $this->maxStaleTtl() >= $now,
             );
         }
 
@@ -255,7 +256,7 @@ class ExtraSubscriptionService
             $row = $store['urls'][$key];
             $lastSuccess = (int)(isset($row['last_success_at']) ? $row['last_success_at'] : 0);
             // 上一次成功太久之前：宁可不发，也不下发一堆早已失效的节点
-            if ($lastSuccess + self::MAX_STALE_TTL < $now) {
+            if ($lastSuccess + $this->maxStaleTtl() < $now) {
                 continue;
             }
             foreach ($row['nodes'] as $node) {
@@ -568,6 +569,22 @@ class ExtraSubscriptionService
         $interval = (int)config('v2board.extra_subscribe_cache_ttl', 300);
 
         return $interval < self::MIN_REFRESH_TTL ? self::MIN_REFRESH_TTL : $interval;
+    }
+
+    /**
+     * 上一次成功的结果最长沿用（秒）
+     *
+     * 取「MAX_STALE_TTL(7 天)」与「刷新间隔 × 3」中的大者：
+     * 如果站长把刷新间隔设得比 7 天还长（缓存时间字段没有上限），
+     * 用小者会让节点在两次刷新之间静默消失 —— 必须先有机会刷新。
+     *
+     * @return int
+     */
+    private function maxStaleTtl()
+    {
+        $floor = $this->refreshInterval() * 3;
+
+        return $floor > self::MAX_STALE_TTL ? $floor : self::MAX_STALE_TTL;
     }
 
     /**
