@@ -201,13 +201,19 @@ class SubscriptionParser
         $node = self::base('shadowsocks', $name, $hp[0], $hp[1], $credential);
         $node['cipher'] = $cipher;
 
-        if (!empty($query['plugin']) && strpos($query['plugin'], 'obfs') !== false) {
+        // 带插件的 ss：渲染器只支持 obfs=http 这一种写法（Helper::buildShadowsocksUri /
+        // Clash / ClashMeta / Singbox 都只认它），其余（v2ray-plugin、obfs=tls…）下发出去
+        // 等于「直连节点」——源站要求插件握手，客户端必然连不上，所以直接跳过并记原因
+        if (!empty($query['plugin'])) {
             $opts = self::parsePluginOpts($query['plugin']);
-            if (isset($opts['obfs']) && $opts['obfs'] === 'http') {
-                $node['obfs'] = 'http';
-                $node['obfs-host'] = isset($opts['obfs-host']) ? $opts['obfs-host'] : '';
-                $node['obfs-path'] = isset($opts['path']) ? $opts['path'] : '';
+            if (!isset($opts['obfs']) || $opts['obfs'] !== 'http') {
+                self::skip('ss_plugin_unsupported:' . self::pluginName($query['plugin'])
+                    . (isset($opts['obfs']) ? ':' . $opts['obfs'] : ''));
+                return null;
             }
+            $node['obfs'] = 'http';
+            $node['obfs-host'] = isset($opts['obfs-host']) ? $opts['obfs-host'] : '';
+            $node['obfs-path'] = isset($opts['path']) ? $opts['path'] : '';
         }
 
         return $node;
@@ -740,6 +746,19 @@ class SubscriptionParser
         }
         $value = strtolower(trim((string)$value));
         return in_array($value, array('1', 'true', 'yes', 'on'), true) ? 1 : 0;
+    }
+
+    /**
+     * 取插件名，用于记跳过原因（如 obfs-local / v2ray-plugin）
+     *
+     * @param  string $plugin
+     * @return string
+     */
+    private static function pluginName($plugin)
+    {
+        $parts = explode(';', $plugin, 2);
+
+        return trim($parts[0]);
     }
 
     /**
