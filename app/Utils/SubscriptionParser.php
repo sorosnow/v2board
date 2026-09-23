@@ -696,7 +696,6 @@ class SubscriptionParser
             'name'       => $name,
             'host'       => trim($host),
             'cache_key'  => 'extra-' . $type . '-' . md5($host . ':' . $port . '#' . $name),
-            // 渲染器优先读取该字段作为节点凭据
             '_credential' => $credential,
         );
 

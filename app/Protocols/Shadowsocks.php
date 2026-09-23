@@ -53,7 +53,6 @@ class Shadowsocks
     public static function SIP008($server, $uuid)
     {
         $config = [
-            // 附加订阅的节点不带 id（id 不参与任何逻辑）→ 缺了就给 0，不要无守护读取
             "id" => isset($server['id']) ? $server['id'] : 0,
             "remarks" => $server['name'],
             "server" => $server['host'],
