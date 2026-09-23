@@ -36,7 +36,7 @@ class Loon
             }
             if ($item['type'] === 'shadowsocks') {
                 $uri .= self::buildShadowsocks($uuid, $item);
-            }elseif ($item['type'] === 'vmess') {
+            }elseif ($item['type'] === 'vmess' && (($item['network'] ?? null) !== 'grpc')) { //loon 不支持 grpc
                 $uri .= self::buildVmess($uuid, $item);
             }elseif ($item['type'] === 'vless' && (($item['network'] ?? null) === 'tcp' || ($item['network'] ?? null) === 'ws')) {
                 $uri .= self::buildVless($uuid, $item);

@@ -50,13 +50,13 @@ class Surfboard
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
             }
-            if ($item['type'] === 'vmess') {
+            if ($item['type'] === 'vmess' && (($item['network'] ?? null) !== 'grpc')) {
                 // [Proxy]
                 $proxies .= self::buildVmess($uuid, $item);
                 // [Proxy Group]
                 $proxyGroup .= $item['name'] . ', ';
             }
-            if ($item['type'] === 'trojan') {
+            if ($item['type'] === 'trojan' && (($item['network'] ?? null) !== 'grpc')) {
                 // [Proxy]
                 $proxies .= self::buildTrojan($uuid, $item);
                 // [Proxy Group]

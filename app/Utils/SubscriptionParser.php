@@ -654,7 +654,9 @@ class SubscriptionParser
         }
 
         $network = !empty($query['type']) ? $query['type'] : 'tcp';
-        if (!self::networkAllowed($network)) {
+        // anytls 本身没有传输概念（所有渲染器都不读它的 network）：只认缺省 tcp
+        if ($network !== 'tcp') {
+            self::skip('unsupported_network:' . $network);
             return null;
         }
         $networkSettings = self::uriNetworkSettings($query, $network);
