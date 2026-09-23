@@ -36,6 +36,18 @@ class SubscriptionParser
     );
 
     /**
+     * 本项目原生支持的 ss cipher（与后台表单白名单、渲染器判断保持一致）
+     *
+     * @var array
+     */
+    private static $ssCiphers = array(
+        'aes-128-gcm',
+        'aes-192-gcm',
+        'aes-256-gcm',
+        'chacha20-ietf-poly1305',
+    );
+
+    /**
      * 跳过原因计数
      *
      * @var array
@@ -187,8 +199,24 @@ class SubscriptionParser
         $cipher = substr($decoded, 0, $colon);
         $credential = substr($decoded, $colon + 1);
 
+        // 空密码：与 trojan/vless/anytls 的处理保持一致，直接丢弃
+        // （渲染器会把空 _credential 当成「用本站用户 uuid」，下发必然是连不上的僵尸节点）
+        if ($credential === '') {
+            self::skip('ss_no_password');
+            return null;
+        }
+
+        // 2022-blake3 不是「不支持」，而是做不了：它的 server key 要靠 created_at
+        // 派生（Helper::getServerKey），第三方节点的 created_at 不可知，下发必然连不上
         if (strpos($cipher, '2022-blake3') !== false) {
             self::skip('ss_2022_unsupported');
+            return null;
+        }
+        // 只保留本站原生支持的 cipher：来源是后台表单白名单
+        // （Admin\ServerShadowsocksSave）与 Shadowsocks/Clash/Surfboard 渲染器的判断，
+        // 三者一致；其余一律丢弃，避免下发客户端不认的加密方式
+        if (!in_array($cipher, self::$ssCiphers, true)) {
+            self::skip('ss_unsupported_cipher:' . $cipher);
             return null;
         }
 
@@ -417,6 +445,12 @@ class SubscriptionParser
             $credential = isset($query['auth']) ? $query['auth'] : '';
         }
 
+        // 空凭据：与 trojan/vless/anytls 的处理保持一致，直接丢弃
+        if ($credential === '') {
+            self::skip('hysteria_no_auth');
+            return null;
+        }
+
         $hp = self::splitHostPort($hostport);
         if ($hp === null) {
             self::skip('hysteria_bad_host_port');
@@ -444,6 +478,12 @@ class SubscriptionParser
         $node['down_mbps'] = isset($query['upmbps']) ? (int)$query['upmbps'] : 0;
         $node['server_key'] = '';
         if (!empty($query['obfs'])) {
+            // hysteria2 只有 salamander 一种混淆，渲染器是原样下发 obfs 值，
+            // 其他取值客户端不认（v1 的 obfs 是另一回事，不受此限）
+            if ($isV2 && strtolower($query['obfs']) !== 'salamander') {
+                self::skip('hysteria_obfs_unsupported:' . $query['obfs']);
+                return null;
+            }
             $node['obfs'] = $query['obfs'];
             $node['obfs_password'] = isset($query['obfs-password']) ? $query['obfs-password']
                 : (isset($query['obfsParam']) ? $query['obfsParam'] : '');
