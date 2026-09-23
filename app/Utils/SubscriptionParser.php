@@ -53,17 +53,20 @@ class SubscriptionParser
     );
 
     /**
-     * 所有渲染器都能忠实还原的传输方式
+     * 认得的传输方式（不在这张表里的直接丢弃 —— 陌生取值原样下发只会得到「按 tcp 连」的坏节点）
      *
-     * Clash 系（Clash/ClashMeta/ClashVerge/ClashNyanpasu/Stash）与 sing-box 都只在
-     * ws / grpc 时才写 network（tcp 是缺省），h2 / http / httpupgrade / kcp / quic /
-     * domainsocket 会被**静默丢掉** → 客户端按 tcp 连 → 必然失败且看不出原因。
-     * vless 额外允许 xhttp（见 networkAllowed() 第二参）：ClashMeta / ClashVerge /
-     * ClashNyanpasu / Stash 都能忠实下发；sing-box 没有该传输，已在渲染器侧跳过这类节点。
+     * 这张表答的是「项目认得什么」，与站点节点那边的取值范围对齐（各 Save 规则的并集：
+     * ServerVmessSave 放行 tcp/kcp/ws/http/domainsocket/quic/grpc/httpupgrade/xhttp，
+     * V2nodeController 放行 tcp/ws/grpc/http/httpupgrade/xhttp；h2 是 v2rayN 的习惯写法）。
+     * 「某个客户端能不能忠实表达」是**另一层**判断，由渲染器侧的 Helper::networkExpressible
+     * 逐格决定（Clash 系只认 tcp/ws/grpc，Loon / QuantumultX / sing-box 各自更窄）。
+     * 所以这里放宽不会让任何客户端拿到坏节点 —— 它只会让 URI 类客户端（V2rayN / Shadowrocket /
+     * General / Passwall / SagerNet / SSRPlus / v2RayTun）拿回它们本来就能忠实下发的节点。
      *
      * @var array
      */
-    private static $networks = array('tcp', 'ws', 'grpc');
+    private static $networks = array('tcp', 'ws', 'grpc', 'kcp', 'http', 'h2', 'httpupgrade',
+        'xhttp', 'quic', 'domainsocket');
 
     /**
      * 跳过原因计数
@@ -272,15 +275,14 @@ class SubscriptionParser
      * @return array|null
      */
     /**
-     * 传输方式白名单：不支持的直接丢弃（原样下发只会得到「按 tcp 连」的坏节点）
+     * 传输方式是否认得（认不得就丢掉并记原因）
      *
      * @param  string $network
-     * @param  array  $extra 额外允许的传输（目前只有 vless 的 xhttp）
      * @return bool
      */
-    private static function networkAllowed($network, $extra = array())
+    private static function networkAllowed($network)
     {
-        if (in_array($network, self::$networks, true) || in_array($network, $extra, true)) {
+        if (in_array($network, self::$networks, true)) {
             return true;
         }
         self::skip('unsupported_network:' . $network);
@@ -386,8 +388,7 @@ class SubscriptionParser
         }
 
         $network = !empty($query['type']) ? $query['type'] : 'tcp';
-        // vless 额外保留 xhttp（Clash 系与 Stash 都能忠实下发，见 networkAllowed()）
-        if (!self::networkAllowed($network, array('xhttp'))) {
+        if (!self::networkAllowed($network)) {
             return null;
         }
         $networkSettings = self::uriNetworkSettings($query, $network);
@@ -871,15 +872,26 @@ class SubscriptionParser
     private static function uriNetworkSettings($query, $network)
     {
         $settings = array();
-        // 只处理 networkAllowed() 放行的传输（tcp / ws / grpc / xhttp）：
-        // 放行表之外的在解析阶段就已经丢了，这里本来就不会被调到
         switch ($network) {
             case 'ws':
+            case 'httpupgrade':
                 if (!empty($query['path'])) {
                     $settings['path'] = $query['path'];
                 }
                 if (!empty($query['host'])) {
                     $settings['headers'] = array('Host' => $query['host']);
+                }
+                if ($network === 'httpupgrade' && !empty($query['host'])) {
+                    $settings['host'] = $query['host'];
+                }
+                break;
+            case 'http':
+            case 'h2':
+                if (!empty($query['path'])) {
+                    $settings['path'] = $query['path'];
+                }
+                if (!empty($query['host'])) {
+                    $settings['host'] = $query['host'];
                 }
                 break;
             case 'xhttp':
@@ -897,6 +909,14 @@ class SubscriptionParser
                 if (!empty($query['serviceName'])) {
                     $settings['serviceName'] = $query['serviceName'];
                 }
+                break;
+            case 'kcp':
+                if (!empty($query['seed'])) {
+                    $settings['seed'] = $query['seed'];
+                }
+                $settings['header'] = array(
+                    'type' => !empty($query['headerType']) ? $query['headerType'] : 'none',
+                );
                 break;
             case 'tcp':
                 if (!empty($query['headerType']) && $query['headerType'] === 'http') {
@@ -923,7 +943,6 @@ class SubscriptionParser
     private static function vmessNetworkSettings($cfg, $network)
     {
         $settings = array();
-        // 只处理 networkAllowed() 放行的传输（vmess 是 tcp / ws / grpc），其余在解析阶段就丢了
         switch ($network) {
             case 'ws':
                 if (!empty($cfg['path'])) {
@@ -939,6 +958,28 @@ class SubscriptionParser
             case 'grpc':
                 if (!empty($cfg['path'])) {
                     $settings['serviceName'] = $cfg['path'];
+                }
+                break;
+            case 'kcp':
+                if (!empty($cfg['path'])) {
+                    $settings['seed'] = $cfg['path'];
+                }
+                $settings['header'] = array(
+                    'type' => !empty($cfg['type']) ? $cfg['type'] : 'none',
+                );
+                break;
+            case 'httpupgrade':
+            case 'http':
+            case 'h2':
+            case 'xhttp':
+                if (!empty($cfg['path'])) {
+                    $settings['path'] = $cfg['path'];
+                }
+                if (!empty($cfg['host'])) {
+                    $settings['host'] = $cfg['host'];
+                }
+                if ($network === 'xhttp' && !empty($cfg['mode'])) {
+                    $settings['mode'] = $cfg['mode'];
                 }
                 break;
             case 'tcp':
