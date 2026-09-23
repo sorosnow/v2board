@@ -521,7 +521,6 @@ class SubscriptionParser
         // 所以这里反向存，才能让下发出去的 upmbps/downmbps 与源 URI 一致
         $node['up_mbps'] = isset($query['downmbps']) ? (int)$query['downmbps'] : 0;
         $node['down_mbps'] = isset($query['upmbps']) ? (int)$query['upmbps'] : 0;
-        $node['server_key'] = '';
         if (!empty($query['obfs'])) {
             // hysteria2 只有 salamander 一种混淆，渲染器是原样下发 obfs 值，
             // 其他取值客户端不认（v1 的 obfs 是另一回事，不受此限）
@@ -691,17 +690,11 @@ class SubscriptionParser
     private static function base($type, $name, $host, $port, $credential)
     {
         $port = trim((string)$port);
-        $now = time();
 
         $node = array(
             'type'       => $type,
             'name'       => $name,
             'host'       => trim($host),
-            // 不写 id：附加订阅只是把外部节点拼到本站节点后面，id 不参与任何逻辑
-            // （SIP008 那边已改成 isset 兜底，缺这个键不会再 500）
-            'created_at' => $now,
-            'updated_at' => $now,
-            'is_online'  => 1,
             'cache_key'  => 'extra-' . $type . '-' . md5($host . ':' . $port . '#' . $name),
             // 渲染器优先读取该字段作为节点凭据
             '_credential' => $credential,
@@ -879,17 +872,15 @@ class SubscriptionParser
     private static function uriNetworkSettings($query, $network)
     {
         $settings = array();
+        // 只处理 networkAllowed() 放行的传输（tcp / ws / grpc / xhttp）：
+        // 放行表之外的在解析阶段就已经丢了，这里本来就不会被调到
         switch ($network) {
             case 'ws':
-            case 'httpupgrade':
                 if (!empty($query['path'])) {
                     $settings['path'] = $query['path'];
                 }
                 if (!empty($query['host'])) {
                     $settings['headers'] = array('Host' => $query['host']);
-                }
-                if ($network === 'httpupgrade' && !empty($query['host'])) {
-                    $settings['host'] = $query['host'];
                 }
                 break;
             case 'xhttp':
@@ -907,14 +898,6 @@ class SubscriptionParser
                 if (!empty($query['serviceName'])) {
                     $settings['serviceName'] = $query['serviceName'];
                 }
-                break;
-            case 'kcp':
-                if (!empty($query['seed'])) {
-                    $settings['seed'] = $query['seed'];
-                }
-                $settings['header'] = array(
-                    'type' => !empty($query['headerType']) ? $query['headerType'] : 'none',
-                );
                 break;
             case 'tcp':
                 if (!empty($query['headerType']) && $query['headerType'] === 'http') {
@@ -941,6 +924,7 @@ class SubscriptionParser
     private static function vmessNetworkSettings($cfg, $network)
     {
         $settings = array();
+        // 只处理 networkAllowed() 放行的传输（vmess 是 tcp / ws / grpc），其余在解析阶段就丢了
         switch ($network) {
             case 'ws':
                 if (!empty($cfg['path'])) {
@@ -956,33 +940,6 @@ class SubscriptionParser
             case 'grpc':
                 if (!empty($cfg['path'])) {
                     $settings['serviceName'] = $cfg['path'];
-                }
-                break;
-            case 'kcp':
-                if (!empty($cfg['path'])) {
-                    $settings['seed'] = $cfg['path'];
-                }
-                $settings['header'] = array(
-                    'type' => !empty($cfg['type']) ? $cfg['type'] : 'none',
-                );
-                break;
-            case 'httpupgrade':
-                if (!empty($cfg['path'])) {
-                    $settings['path'] = $cfg['path'];
-                }
-                if (!empty($cfg['host'])) {
-                    $settings['host'] = $cfg['host'];
-                }
-                break;
-            case 'xhttp':
-                if (!empty($cfg['path'])) {
-                    $settings['path'] = $cfg['path'];
-                }
-                if (!empty($cfg['host'])) {
-                    $settings['host'] = $cfg['host'];
-                }
-                if (!empty($cfg['mode'])) {
-                    $settings['mode'] = $cfg['mode'];
                 }
                 break;
             case 'tcp':
