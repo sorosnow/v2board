@@ -79,6 +79,25 @@ class ExtraSubscriptionService
     );
 
     /**
+     * 存在性之外的第二层：这些字段的**取值**也必须合法（只收会导致渲染器抛异常或客户端拒收的）
+     *
+     * - shadowsocks 的 cipher：ClashMeta / ClashVerge / Stash / Singbox **没有白名单**，会把空值或
+     *   陌生值原样写进配置（客户端不认）——tools/store-value-audit.php 实测确认
+     * - 2022-blake3-* 尤其不能放：它的 server key 要由 created_at 派生，而外部节点没有 created_at，
+     *   上面那几个渲染器在 ss2022 分支里是无守护读取 → **整份订阅 500**
+     *
+     * 其余字段不进这张表：network 在渲染器侧已有 networkExpressible 逐格判定；
+     * port 不做校验（既定决定，且多端口形态 `20000-30000` 是合法的）。
+     *
+     * @var array
+     */
+    private static $nodeValues = array(
+        'shadowsocks' => array(
+            'cipher' => array('aes-128-gcm', 'aes-192-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305'),
+        ),
+    );
+
+    /**
      * 把「额外订阅」的节点合并进本站节点列表（用户请求路径：只读本地，不发 HTTP）
      *
      * @param  array $servers 本站可用节点
@@ -399,6 +418,8 @@ class ExtraSubscriptionService
      *
      * 三类会被丢弃：类型不在表里（本项目没有这个协议）、缺任一必需字段（渲染器会 500）、
      * 凭据为空（渲染器会退回本站用户 uuid → 发出必然连不上的节点）。
+     * 第四类：字段齐全但**取值非法**（见 $nodeValues）——会下发客户端不认的配置，
+     * 或让渲染器抛异常（整份订阅 500）。
      *
      * @param  string $type
      * @param  array  $node
@@ -412,6 +433,13 @@ class ExtraSubscriptionService
         foreach (self::$nodeFields[$type] as $need) {
             if (!array_key_exists($need, $node)) {
                 return false;
+            }
+        }
+        if (isset(self::$nodeValues[$type])) {
+            foreach (self::$nodeValues[$type] as $field => $allowed) {
+                if (!in_array($node[$field], $allowed, true)) {
+                    return false;
+                }
             }
         }
 
