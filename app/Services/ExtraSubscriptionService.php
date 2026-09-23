@@ -54,6 +54,31 @@ class ExtraSubscriptionService
     const MAX_URLS = 10;
 
     /**
+     * 每种协议（本项目自身的节点格式）必须齐备的键
+     *
+     * 渲染器对其中大部分字段是**无守护读取**（缺键就会 Undefined array key → Laravel 转成
+     * 异常 → 整份订阅 500），所以脏存储里的节点不能只看 type/host/port。
+     * 表按 SubscriptionParser 的实际输出整理（含 snake_case 与 camelCase 两套，
+     * 不同渲染器读的写法不同）；tools/type-fields-audit.php 会校验它没有漂移。
+     *
+     * @var array
+     */
+    private static $nodeFields = array(
+        'shadowsocks' => array('cipher'),
+        'vmess'       => array('tls', 'tls_settings', 'tlsSettings', 'network', 'network_settings', 'networkSettings'),
+        'vless'       => array('tls', 'tls_settings', 'tlsSettings', 'encryption', 'flow',
+                               'network', 'network_settings', 'networkSettings'),
+        'trojan'      => array('tls', 'tls_settings', 'tlsSettings', 'server_name', 'allow_insecure',
+                               'network', 'network_settings', 'networkSettings'),
+        'hysteria'    => array('version', 'insecure', 'up_mbps', 'down_mbps', 'server_name',
+                               'tls_settings', 'tlsSettings'),
+        'tuic'        => array('disable_sni', 'zero_rtt_handshake', 'congestion_control', 'udp_relay_mode',
+                               'insecure', 'server_name', 'tls_settings', 'tlsSettings'),
+        'anytls'      => array('tls', 'tls_settings', 'tlsSettings', 'insecure', 'server_name',
+                               'network', 'network_settings', 'networkSettings'),
+    );
+
+    /**
      * 把「额外订阅」的节点合并进本站节点列表（用户请求路径：只读本地，不发 HTTP）
      *
      * @param  array $servers 本站可用节点
@@ -89,6 +114,11 @@ class ExtraSubscriptionService
                 $host = isset($node['host']) && is_scalar($node['host']) ? trim((string)$node['host']) : '';
                 $port = isset($node['port']) && is_scalar($node['port']) ? (string)$node['port'] : '';
                 if ($type === '' || $host === '' || $port === '') {
+                    continue;
+                }
+                // 类型必需字段：脏存储（手改 / 残留旧格式 / 解析器升级前后的存储）里的节点
+                // 只看 type/host/port 不够 —— 缺协议字段会让渲染器直接抛异常
+                if (!self::nodeComplete($type, $node)) {
                     continue;
                 }
                 $name = isset($node['name']) && is_scalar($node['name']) ? trim((string)$node['name']) : '';
@@ -362,6 +392,30 @@ class ExtraSubscriptionService
                 $store['urls'][$key] = $this->failRow($store, $key, $url, $now, $reason);
             }
         }
+    }
+
+    /**
+     * 节点是否符合「本项目自身的协议格式」
+     *
+     * 三类会被丢弃：类型不在表里（本项目没有这个协议）、缺任一必需字段（渲染器会 500）、
+     * 凭据为空（渲染器会退回本站用户 uuid → 发出必然连不上的节点）。
+     *
+     * @param  string $type
+     * @param  array  $node
+     * @return bool
+     */
+    private static function nodeComplete($type, $node)
+    {
+        if (!isset(self::$nodeFields[$type]) || empty($node['_credential'])) {
+            return false;
+        }
+        foreach (self::$nodeFields[$type] as $need) {
+            if (!array_key_exists($need, $node)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
