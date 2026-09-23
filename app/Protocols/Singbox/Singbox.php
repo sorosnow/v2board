@@ -61,17 +61,21 @@ class Singbox
                     $proxies[] = $ssConfig;
                     break;
                 case 'trojan':
+                    if (!$this->networkSupported($item)) {
+                        break;
+                    }
                     $trojanConfig = $this->buildTrojan($uuid, $item);
                     $proxies[] = $trojanConfig;
                     break;
                 case 'vmess':
+                    if (!$this->networkSupported($item)) {
+                        break;
+                    }
                     $vmessConfig = $this->buildVmess($uuid, $item);
                     $proxies[] = $vmessConfig;
                     break;
                 case 'vless':
-                    // sing-box 没有 xhttp 传输：buildVless 会写出空 transport（客户端会拒绝该配置）
-                    // → 跳过这个节点，与 Loon / QuantumultX 的处理一致
-                    if (isset($item['network']) && !in_array($item['network'], array('tcp', 'ws', 'grpc'), true)) {
+                    if (!$this->networkSupported($item)) {
                         break;
                     }
                     $vlessConfig = $this->buildVless($uuid, $item);
@@ -142,6 +146,23 @@ class Singbox
         return $array;
     }
 
+
+    /**
+     * sing-box 只表达得了 tcp / ws / grpc 三种传输
+     *
+     * buildVmess / buildTrojan / buildVless 都是先写 `transport = []`，只有这三种才填 type；
+     * 其余传输（后台建节点时 network 允许 kcp / http / domainsocket / quic / httpupgrade / xhttp）
+     * 会得到空 transport → 整份配置可能被客户端拒绝。这类节点直接不产出，
+     * 与 Loon / QuantumultX 的做法一致（selector / urltest 的 outbounds 取自
+     * addProxies() 的 array_column($proxies, 'tag')，所以跳过不会留下悬空 tag）。
+     *
+     * @param  array $item
+     * @return bool
+     */
+    protected function networkSupported($item)
+    {
+        return !isset($item['network']) || in_array($item['network'], array('tcp', 'ws', 'grpc'), true);
+    }
 
     protected function buildVmess($uuid, $server)
     {

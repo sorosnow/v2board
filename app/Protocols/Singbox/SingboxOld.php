@@ -55,23 +55,24 @@ class SingboxOld
             if ($item['type'] === 'v2node') {
                 $item['type'] = $item['protocol'];
             }
+            // sing-box 只表达得了 tcp / ws / grpc：其余传输（后台建节点时 network 允许 kcp / http /
+            // domainsocket / quic / httpupgrade / xhttp）会得到空 transport → 整份配置可能被拒，
+            // 这类节点直接不产出（与 Loon / QuantumultX 一致；selector 的 outbounds 取自
+            // addProxies() 的 array_column($proxies, 'tag')，跳过不会留下悬空 tag）
+            $netOk = !isset($item['network']) || in_array($item['network'], array('tcp', 'ws', 'grpc'), true);
             if ($item['type'] === 'shadowsocks') {
                 $ssConfig = $this->buildShadowsocks($uuid, $item);
                 $proxies[] = $ssConfig;
             }
-            if ($item['type'] === 'trojan') {
+            if ($item['type'] === 'trojan' && $netOk) {
                 $trojanConfig = $this->buildTrojan($uuid, $item);
                 $proxies[] = $trojanConfig;
             }
-            if ($item['type'] === 'vmess') {
+            if ($item['type'] === 'vmess' && $netOk) {
                 $vmessConfig = $this->buildVmess($uuid, $item);
                 $proxies[] = $vmessConfig;
             }
-            if ($item['type'] === 'vless'
-                // sing-box 没有 xhttp 传输：buildVless 会写出空 transport（客户端会拒绝该配置）
-                // → 跳过这个节点，与 Loon / QuantumultX 的处理一致
-                && (!isset($item['network']) || in_array($item['network'], array('tcp', 'ws', 'grpc'), true))
-            ) {
+            if ($item['type'] === 'vless' && $netOk) {
                 $vlessConfig = $this->buildVless($uuid, $item);
                 $proxies[] = $vlessConfig;
             }
