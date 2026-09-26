@@ -87,15 +87,45 @@ class SubscriptionParser
                 continue;
             }
             $node = self::parseLine($line);
-            if ($node !== null) {
-                $nodes[] = $node;
+            if ($node === null) {
+                continue;
             }
+            // 上游可能把「信息条目」也塞在订阅里（见 isInfoPseudoNode）：
+            // 它们与真节点同构，不拦掉就会被当节点下发给本站用户
+            if (self::isInfoPseudoNode(isset($node['name']) ? $node['name'] : '')) {
+                self::skip('info_pseudo_node');
+                continue;
+            }
+            $nodes[] = $node;
         }
 
         return array(
             'nodes'   => $nodes,
             'skipped' => self::$skipped,
         );
+    }
+
+    /**
+     * 是否是「信息条目」而不是真节点
+     *
+     * 本项目的 setSubscribeInfoToServers() 会把「剩余流量 / 距离下次重置剩余 / 套餐到期」
+     * 三条显示用信息做成与真节点**同构**的条目（克隆第一个节点、只换名字）塞进订阅里。
+     * 上游只要是 v2board 系面板且开了 show_info_to_server_enable，这些条目就会跟着被抓回来。
+     *
+     * 必须拦掉，否则有三个后果（实测见 tools/info-pseudo-node-check.php）：
+     *   1. 本站用户的节点列表里会多出「剩余流量：504.7 GB」这种根本不是节点的条目
+     *   2. 它们是**上游那个账号**的流量/到期数据，等于把上游账号信息透给本站用户
+     *   3. 名字每次刷新都会变（流量在走、天数在减），客户端里表现为节点不断新增 / 残留
+     *      —— 很容易被误判成「本地存储一直在累积」（存储其实是整体替换的）
+     *
+     * 匹配用的是本项目自己的命名约定（全角冒号），第三方真节点几乎不可能撞上。
+     *
+     * @param  string $name
+     * @return bool
+     */
+    private static function isInfoPseudoNode($name)
+    {
+        return preg_match('/^(剩余流量|距离下次重置剩余|套餐到期)[：:]/u', trim((string)$name)) === 1;
     }
 
     /**
