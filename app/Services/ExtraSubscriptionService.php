@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Log;
  * 读方永远看不到写一半的内容），每条链接一份：
  *  nodes / node_count / skipped / error / last_attempt_at / last_success_at
  *  - 拉取失败只写 error 与 last_attempt_at，**不动 nodes**（旧节点继续下发）
- *  - 刷新间隔 = 后台的 extra_subscribe_cache_ttl（默认 300，下限 MIN_REFRESH_TTL=30）；
+ *  - 刷新间隔 = 后台的 extra_subscribe_cache_ttl（默认 1 小时，下限 MIN_REFRESH_TTL=30）；
  *    该配置键名是历史遗留（原来是 Redis 缓存 TTL），语义就是「多久去刷新一次」，
  *    键名不变以免动后台与线上已有配置；拉取失败后按 FAIL_RETRY_TTL(60s) 重试
  *  - 解析不出节点的响应（空 body / 非订阅内容）同样按失败处理，避免清空已下发的节点
@@ -45,6 +45,9 @@ class ExtraSubscriptionService
     /** 刷新间隔下限（秒）：后台设得再小也会被抬到这里 */
     const MIN_REFRESH_TTL = 30;
 
+    /** 刷新间隔上限（秒）：后台设得再大也会被压到这里 */
+    const MAX_REFRESH_TTL = 86400; // 1 天
+
     /** 拉取失败后的重试间隔（秒） */
     const FAIL_RETRY_TTL = 60;
 
@@ -53,6 +56,18 @@ class ExtraSubscriptionService
 
     /** 链接条数上限（超出只取前几条并记 warning） */
     const MAX_URLS = 10;
+
+    /** 后台「缓存时间」缺省值（秒）。键名是历史遗留，语义就是「多久去第三方刷新一次」 */
+    const DEFAULT_REFRESH_TTL = 3600; // 1 小时
+
+    /** 请求超时缺省值（秒） */
+    const DEFAULT_TIMEOUT = 15;
+
+    /** 请求超时下限（秒）：后台设得再小也会被抬到这里 */
+    const MIN_TIMEOUT = 3;
+
+    /** 请求超时上限（秒）：后台设得再大也会被压到这里 */
+    const MAX_TIMEOUT = 30;
 
     /**
      * 每种协议（本项目自身的节点格式）必须齐备的键
@@ -293,6 +308,65 @@ class ExtraSubscriptionService
         }
 
         return $summary;
+    }
+
+    /**
+     * 把当前配置里的链接标记为「该重新拉取了」（供后台保存配置后调用）
+     *
+     * 为什么不在保存请求里直接调 refresh()：
+     *   1. 那会把后台保存卡住最长一个超时（现在默认 15s），管理员点保存要干等
+     *   2. 同一个请求进程里的 config() 还是**旧值**（保存只重写了文件与缓存，
+     *      没重载内存里的配置树），直接用会拿旧链接去拉
+     * 所以这里只做一件小事：把 last_attempt_at 置 0，让下一轮 extra:subscribe
+     * （每分钟）判定为「到期」，从而立刻去第三方拉最新结果。
+     *
+     * 只改时间戳、**不动 nodes**，所以「标记」到「真正拉取」之间不会出现没有节点的空窗；
+     * 拉取失败时旧节点照旧继续下发（failRow 语义）。
+     *
+     * @return bool 是否真的改动了存储
+     */
+    public function markDue()
+    {
+        try {
+            if (!(int)config('v2board.extra_subscribe_enable', 0)) {
+                return false;
+            }
+            $urls = $this->urls();
+            if (!$urls) {
+                return false;
+            }
+
+            $this->ensureStoreDir();
+            $lock = $this->lockStore();
+            if (!$lock) {
+                return false;   // 已有实例在刷新：它本来就会拉最新，不必抢锁
+            }
+
+            $changed = false;
+            try {
+                $store = $this->loadStore(true);
+                foreach ($urls as $url) {
+                    $key = md5($url);
+                    // 没有记录的链接本来就是「到期」状态；这里只处理已有记录的
+                    if (isset($store['urls'][$key])
+                        && (int)$store['urls'][$key]['last_attempt_at'] !== 0) {
+                        $store['urls'][$key]['last_attempt_at'] = 0;
+                        $changed = true;
+                    }
+                }
+                if ($changed) {
+                    $this->saveStore($store);
+                }
+            } finally {
+                $this->unlockStore($lock);
+            }
+
+            return $changed;
+        } catch (\Throwable $e) {
+            // 后台保存不能因为这一步失败而报错
+            Log::warning('extra subscribe: mark due failed - ' . $this->maskText($e->getMessage()));
+            return false;
+        }
     }
 
     /**
@@ -748,18 +822,28 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 刷新间隔（秒）：后台配置的「缓存时间」与下限取大
+     * 刷新间隔（秒）：把后台配置的「缓存时间」夹到 [MIN_REFRESH_TTL, MAX_REFRESH_TTL]
      *
      * 配置键 extra_subscribe_cache_ttl 是历史遗留名字，现在语义就是
      * 「多久去第三方刷新一次」；键名不改以免动后台 UI 与线上已有配置。
+     *
+     * 上限存在的理由：设得过大等于长期不刷新，而节点会一直被下发
+     * （陈旧上限是 max(MAX_STALE_TTL, 间隔×3)，间隔越大反而越不会过期）。
+     * 后台表单的 min/max 规则引用同一批常量，两边不会漂移。
      *
      * @return int
      */
     private function refreshInterval()
     {
-        $interval = (int)config('v2board.extra_subscribe_cache_ttl', 300);
+        $interval = (int)config('v2board.extra_subscribe_cache_ttl', self::DEFAULT_REFRESH_TTL);
+        if ($interval < self::MIN_REFRESH_TTL) {
+            return self::MIN_REFRESH_TTL;
+        }
+        if ($interval > self::MAX_REFRESH_TTL) {
+            return self::MAX_REFRESH_TTL;
+        }
 
-        return $interval < self::MIN_REFRESH_TTL ? self::MIN_REFRESH_TTL : $interval;
+        return $interval;
     }
 
     /**
@@ -806,14 +890,15 @@ class ExtraSubscriptionService
      */
     private function requestOptions()
     {
-        // 并发模式下总耗时约最慢一条；单条超时默认 5s，夹紧到 [3, 10]
-        $timeout = (int)config('v2board.extra_subscribe_timeout', 5);
-        if ($timeout < 3) {
-            $timeout = 3;
+        // 并发模式下整体耗时约等于最慢的一条，所以单条超时就是整批的耗时上限。
+        // 本超时只发生在定时任务（extra:subscribe）里，不在用户请求路径上，
+        // 所以可以给宽一点：默认 15s，夹紧到 [3, 30]。
+        $timeout = (int)config('v2board.extra_subscribe_timeout', self::DEFAULT_TIMEOUT);
+        if ($timeout < self::MIN_TIMEOUT) {
+            $timeout = self::MIN_TIMEOUT;
         }
-        // 上限 10s：本超时只在定时任务里等待，无需再长
-        if ($timeout > 10) {
-            $timeout = 10;
+        if ($timeout > self::MAX_TIMEOUT) {
+            $timeout = self::MAX_TIMEOUT;
         }
 
         return array(

@@ -5,10 +5,12 @@ namespace App\Http\Controllers\V1\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\ConfigSave;
 use App\Jobs\SendEmailJob;
+use App\Services\ExtraSubscriptionService;
 use App\Services\TelegramService;
 use App\Utils\Dict;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Cache;
 
@@ -123,8 +125,8 @@ class ConfigController extends Controller
                 'extra_subscribe_enable' => (int)config('v2board.extra_subscribe_enable', 0),
                 // extra subscribe：单个多行输入框（一行一条，**回车换行**，不支持逗号）。
                 'extra_subscribe_url' => config('v2board.extra_subscribe_url'),
-                'extra_subscribe_cache_ttl' => (int)config('v2board.extra_subscribe_cache_ttl', 300),
-                'extra_subscribe_timeout' => (int)config('v2board.extra_subscribe_timeout', 5),
+                'extra_subscribe_cache_ttl' => (int)config('v2board.extra_subscribe_cache_ttl', ExtraSubscriptionService::DEFAULT_REFRESH_TTL),
+                'extra_subscribe_timeout' => (int)config('v2board.extra_subscribe_timeout', ExtraSubscriptionService::DEFAULT_TIMEOUT),
             ],
             'frontend' => [
                 'frontend_theme' => config('v2board.frontend_theme', 'v2board'),
@@ -214,6 +216,17 @@ class ConfigController extends Controller
         // （原代码这里是 `foreach (ConfigSave::RULES as $k => $v)` 再判
         //   `!in_array($k, array_keys(ConfigSave::RULES))`，条件恒为 false、是段死代码；
         //   已删除，上面的循环就是它的正确形态。）
+        // 「额外订阅」的键是否出现在本次提交里：只有它被保存过才值得立刻重拉一次，
+        // 免得管理员改支付 / 主题等无关配置时也去骚扰第三方（`$data` 下面会被 var_export 覆盖，
+        // 所以必须在这里先取好）
+        $extraSubscribeTouched = false;
+        foreach (array('extra_subscribe_enable', 'extra_subscribe_url',
+                       'extra_subscribe_cache_ttl', 'extra_subscribe_timeout') as $extraKey) {
+            if (array_key_exists($extraKey, $data)) {
+                $extraSubscribeTouched = true;
+                break;
+            }
+        }
         $data = var_export($config, 1);
         if (!File::put(base_path() . '/config/v2board.php', "<?php\n return $data ;")) {
             abort(500, '修改失败');
@@ -226,8 +239,19 @@ class ConfigController extends Controller
         Artisan::call('config:cache');
 
         // 附加订阅的结果由定时任务 extra:subscribe 预取到
-        // storage/app/extra-subscribe.json，订阅下发只读本地；
-        // 改了链接/TTL/超时后，最多 1 分钟由下一轮任务生效（也可手动跑该命令）
+        // storage/app/extra-subscribe.json，订阅下发只读本地。
+        // 这里把本进程内存里的配置树换成刚写入的值 —— config:cache 只重写缓存文件、
+        // 不会重载内存里的 config，不换的话下面 markDue() 会按**旧链接 / 旧开关**判断。
+        Config::set('v2board', $config);
+
+        // 保存后立刻把「额外订阅」标记为待刷新：下一轮 extra:subscribe（每分钟）就会去
+        // 第三方拉最新结果，不必等缓存时间（默认 1 小时）到。
+        // 刻意**不**在这里直接调 refresh()：那会把后台保存卡住最长一个超时（默认 15s）。
+        // 返回 false 都不影响正确性：未启用 / 没配链接 / 已有实例正在跑（它本来就在拉最新）。
+        if ($extraSubscribeTouched) {
+            (new ExtraSubscriptionService())->markDue();
+        }
+
         if(Cache::has('WEBMANPID')) {
             $pid = Cache::get('WEBMANPID');
             Cache::forget('WEBMANPID');
