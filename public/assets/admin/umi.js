@@ -6096,7 +6096,7 @@
                 })), f.a.createElement(m, {
                     isChildren: !0,
                     title: "\u8bf7\u6c42\u8d85\u65f6\uff08\u79d2\uff09",
-                    description: "\u591a\u6761\u94fe\u63a5\u662f\u5e76\u53d1\u62c9\u53d6\u7684\uff0c\u6574\u4f53\u8017\u65f6\u7ea6\u7b49\u4e8e\u6700\u6162\u7684\u4e00\u6761\uff0c\u800c\u4e0d\u662f\u5404\u6761\u76f8\u52a0\uff08\u9ed8\u8ba4 15 \u79d2\uff0c\u53ef\u586b 3~30\uff09\u3002"
+                    description: "\u5355\u6761\u94fe\u63a5\u7684\u8bf7\u6c42\u8d85\u65f6\u65f6\u95f4\u3002"
                 }, f.a.createElement("input", {
                     type: "text",
                     className: "form-control",
