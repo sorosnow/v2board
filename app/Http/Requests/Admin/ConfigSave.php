@@ -68,8 +68,12 @@ class ConfigSave extends FormRequest
             'string',
             'max:5000',
         ],
-        'extra_subscribe_cache_ttl' => 'nullable|integer',
-        'extra_subscribe_timeout' => 'nullable|integer',
+        // 服务层会把这两个值夹紧（ExtraSubscriptionService::refreshInterval / requestOptions），
+        // 这里引用同一批常量，免得「后台允许填的值」与「服务端实际生效的值」各写一份而漂移
+        'extra_subscribe_cache_ttl' => 'nullable|integer|min:' . ExtraSubscriptionService::MIN_REFRESH_TTL
+            . '|max:' . ExtraSubscriptionService::MAX_REFRESH_TTL,
+        'extra_subscribe_timeout' => 'nullable|integer|min:' . ExtraSubscriptionService::MIN_TIMEOUT
+            . '|max:' . ExtraSubscriptionService::MAX_TIMEOUT,
         // server
         'server_api_url' => 'nullable|string',
         'server_token' => 'nullable|min:16',
@@ -189,6 +193,10 @@ class ConfigSave extends FormRequest
             'logo.url' => 'LOGO URL格式不正确，必须携带https(s)://',
             'secure_path.min' => '后台路径长度最小为8位',
             'secure_path.regex' => '后台路径只能为字母或数字',
+            'extra_subscribe_cache_ttl.min' => '缓存时间最小为 ' . ExtraSubscriptionService::MIN_REFRESH_TTL . ' 秒',
+            'extra_subscribe_cache_ttl.max' => '缓存时间最大为 ' . ExtraSubscriptionService::MAX_REFRESH_TTL . ' 秒（1 天）',
+            'extra_subscribe_timeout.min' => '请求超时最小为 ' . ExtraSubscriptionService::MIN_TIMEOUT . ' 秒',
+            'extra_subscribe_timeout.max' => '请求超时最大为 ' . ExtraSubscriptionService::MAX_TIMEOUT . ' 秒',
         ];
     }
 }
