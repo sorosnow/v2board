@@ -708,7 +708,7 @@ class ExtraSubscriptionService
      * 读取额外订阅链接配置，拆分为去重后的数组
      *
      * 一行一条（回车换行，不支持逗号）；只做拆分 / 去重 / 限流，
-     * 合法性交给 isUrlAllowed()。历史槽位键 _1/_2 不再读取。
+     * 合法性交给 isUrlAllowed()。
      *
      * @param  string|null $raw 不传则读当前配置
      * @param  bool        $logLimit 是否记录「超过上限」日志：请求路径上不记
