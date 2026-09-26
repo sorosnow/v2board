@@ -294,7 +294,15 @@ class SubscriptionParser
             return null;
         }
         $cfg = json_decode($json, true);
-        if (!is_array($cfg) || empty($cfg['add']) || empty($cfg['port'])) {
+        if (!is_array($cfg)) {
+            self::skip('vmess_bad_json');
+            return null;
+        }
+        // 同 splitQuery()：vmess 分享链接的 JSON 字段一律是标量，`"path": []` / `"add": []`
+        // 这种畸形写法会变成数组并炸掉渲染器（Surfboard 的字符串插值）。
+        // 必须在下面取 add/port/id 之前过滤：否则被过滤掉的键会在 base() 里变成「未定义键」。
+        $cfg = array_filter($cfg, 'is_scalar');
+        if (empty($cfg['add']) || empty($cfg['port'])) {
             self::skip('vmess_bad_json');
             return null;
         }
@@ -386,13 +394,24 @@ class SubscriptionParser
         }
         $networkSettings = self::uriNetworkSettings($query, $network);
 
+        // 非 none 的 encryption（Xray 25.x 的 mlkem768x25519plus）本项目**无法从 URI 忠实还原**：
+        // 它还需要 mode / rtt / client_padding / password 四个设置，而分享链接里没有这些字段
+        // （本站节点靠后台表单生成 encryption_settings，见 Server\VlessController）。
+        // 按既有的「渲染器还原不了的一律丢弃」原则整条跳过 —— 下发出去只会得到连不上的僵尸节点
+        // （不跳过的后果见 tools/vless-encryption-settings-check.php：URI 类渲染器整份订阅 500）。
+        $encryption = isset($query['encryption']) && is_scalar($query['encryption'])
+            ? strtolower(trim((string)$query['encryption'])) : '';
+        if ($encryption !== '' && $encryption !== 'none') {
+            self::skip('vless_encryption_unsupported:' . $encryption);
+            return null;
+        }
+
         $node = self::base('vless', $name, $hp[0], $hp[1], $credential);
         $node['tls'] = $tls;
         $node['tls_settings'] = $tlsSettings;
         $node['tlsSettings'] = $tlsSettings;
         $node['flow'] = isset($query['flow']) ? $query['flow'] : '';
-        $node['encryption'] = (!empty($query['encryption']) && $query['encryption'] !== 'none')
-            ? $query['encryption'] : 'none';
+        $node['encryption'] = 'none';
         $node['network'] = $network;
         $node['network_settings'] = $networkSettings;
         $node['networkSettings'] = $networkSettings;
@@ -748,6 +767,13 @@ class SubscriptionParser
         $query = array();
         parse_str(substr($body, $pos + 1), $query);
         $body = substr($body, 0, $pos);
+        // 订阅 URI 的参数一律是标量；`?path[]=/w`、`?security[]=x` 这类畸形写法会让 parse_str
+        // 产出**数组**，而下游全是按字符串用的：
+        //   - Surfboard 直接插值 `"ws-path={$server['network_settings']['path']}"` → Array to string
+        //   - parseVless 的 strtolower($query['security']) → TypeError
+        // 两者都会让整份订阅 500（或让整个链接在 fetchInto 里被标失败、不再刷新）。
+        // 统一把非标量参数丢掉，等价于「这个参数没写」——畸形输入降级，而不是炸掉整批。
+        $query = array_filter($query, 'is_scalar');
         return $query;
     }
 

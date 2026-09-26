@@ -80,6 +80,24 @@ class ExtraSubscriptionService
     );
 
     /**
+     * 这些键**只要存在就必须是数组**
+     *
+     * $nodeFields 只查「键在不在」（array_key_exists），拦不住「键在但取值不是数组」。
+     * 而渲染器拿到这些键后会先 `$x = $server['tls_settings'] ?? []` 再直接下标，
+     * PHP 8 下对字符串下标取值是 **TypeError**（不是 warning，catch 不到）：
+     *   `$tlsSettings = 'oops'; $tlsSettings['public_key']` → Cannot access offset of type string on string
+     * 实测路径：tls_settings='oops' + tls=2 的 vless 节点能通过原守卫，
+     * 落到 ClashMeta::buildVless() / Singbox 的 reality 分支 → 整份订阅 500。
+     *
+     * 只可能来自手改 / 残留存储：解析器产出这几个键时一律是数组
+     * （SubscriptionParser 里它们都由数组字面量或 uriNetworkSettings()/vmessNetworkSettings() 构造，
+     * 后者无条件返回 array）。
+     *
+     * @var array
+     */
+    private static $nodeArrayKeys = array('tls_settings', 'tlsSettings', 'network_settings', 'networkSettings');
+
+    /**
      * 存在性之外的第二层：这些字段的**取值**也必须合法（只收会导致渲染器抛异常或客户端拒收的）
      *
      * - shadowsocks 的 cipher：白名单就是 Helper::SS_CIPHERS（4 种 AEAD）—— ClashMeta / ClashVerge /
@@ -87,6 +105,11 @@ class ExtraSubscriptionService
      *   ——tools/store-value-audit.php 实测确认
      * - 2022-blake3-* 尤其不能放：它的 server key 要由 created_at 派生，而外部节点没有 created_at，
      *   上面那几个渲染器在 ss2022 分支里是无守护读取 → **整份订阅 500**
+     * - vless 的 encryption：只放行 'none'。非 none 的值（Xray 25.x 的 mlkem768x25519plus）
+     *   需要 mode / rtt / client_padding / password 四个设置，URI 里没有，外部节点**无法忠实还原**
+     *   （解析器已在 parseVless() 里整条跳过，这里是第二道：旧存储 / 手改存储里的节点仍会被挡掉）。
+     *   放行它会同时踩两个坑：URI 类渲染器读 encryption_settings 无守护（整份订阅 500），
+     *   Clash 系则按「无加密」下发 → 出一个必然连不上的僵尸节点
      *
      * 其余字段不进这张表：network 在渲染器侧已有 networkExpressible 逐格判定；
      * port 不做校验（既定决定，且多端口形态 `20000-30000` 是合法的）。
@@ -96,6 +119,10 @@ class ExtraSubscriptionService
     private static $nodeValues = array(
         'shadowsocks' => array(
             'cipher' => Helper::SS_CIPHERS,
+        ),
+        // 走到这里时 encryption 必定存在（上面 $nodeFields['vless'] 已保证键齐）
+        'vless' => array(
+            'encryption' => array('none'),
         ),
     );
 
@@ -137,6 +164,10 @@ class ExtraSubscriptionService
                 if ($type === '' || $host === '' || $port === '') {
                     continue;
                 }
+                // 存储文件会跨代码版本存活（刷新失败时最长沿用 7 天），旧版解析器写下的形状
+                // 可能缺几个「可选但被渲染器无守护读取」的键：先补齐再校验。
+                // 对当前解析器产出的节点这一步是恒等操作（只补缺失的键，不改已有值）。
+                $node = self::repairOptionalKeys($type, $node);
                 // 类型必需字段：脏存储（手改 / 残留旧格式 / 解析器升级前后的存储）里的节点
                 // 只看 type/host/port 不够 —— 缺协议字段会让渲染器直接抛异常
                 if (!self::nodeComplete($type, $node)) {
@@ -437,6 +468,12 @@ class ExtraSubscriptionService
                 return false;
             }
         }
+        // 键在、但取值不是数组：渲染器直接下标会抛 TypeError（见 $nodeArrayKeys）
+        foreach (self::$nodeArrayKeys as $need) {
+            if (array_key_exists($need, $node) && !is_array($node[$need])) {
+                return false;
+            }
+        }
         if (isset(self::$nodeValues[$type])) {
             foreach (self::$nodeValues[$type] as $field => $allowed) {
                 if (!in_array($node[$field], $allowed, true)) {
@@ -446,6 +483,56 @@ class ExtraSubscriptionService
         }
 
         return true;
+    }
+
+    /**
+     * 补齐「可选、但被渲染器无守护读取」的键（只补缺失的键，绝不改已有值）
+     *
+     * 为什么需要：存储文件会跨代码版本存活。刷新失败时旧节点最长继续沿用
+     * MAX_STALE_TTL(7 天)，这段时间里读到的可能是旧版解析器写下的形状，而渲染器对
+     * 这些键是直接读的（`$tlsSettings['short_id']`，无 `??`）。
+     *
+     * 当前唯一确认可达的一处：**reality 的 public_key / short_id**。
+     * 旧版 parseVless() 是**条件写入**（`if (!empty($query['sid']))`，见 6723dd78 / b032ef22），
+     * 而 sid 在 reality 分享链接里本就可选 —— 于是旧存储里会留下「tls=2 但 tls_settings
+     * 里没有 short_id」的节点，Clash 系 / Sing-box 渲染器在 tls==2 时无守护读取该键
+     * → 整份订阅 500（历史上 c9ba28c8 就是修这个：解析器侧已改为无条件写 ''，
+     * 但**已经落盘的旧节点不会因此变好**）。这里补的默认值就是解析器现在写的值，
+     * 所以补完的节点与「同一 URI 用当前解析器解析」的结果一致。
+     *
+     * 刻意不做的：不补 mport / obfs-host / obfs-path / obfs_password。核对过
+     * SubscriptionParser 的全部 28 个历史版本，这几组键**从首版起就是与主键无条件同时写入**
+     * （三元兜底 ''），任何解析器版本都不可能产出「有 obfs 但没有 obfs-host」这种形状；
+     * 补它们只会掩盖手工改坏的存储，属于无收益的额外分支。
+     *
+     * @param  string $type
+     * @param  array  $node
+     * @return array
+     */
+    private static function repairOptionalKeys($type, array $node)
+    {
+        // reality 只出现在这两种协议里（tls=2 即 reality，见 parseVless / parseAnyTls）
+        if (($type !== 'vless' && $type !== 'anytls') || !isset($node['tls']) || $node['tls'] != 2) {
+            return $node;
+        }
+        foreach (array('tls_settings', 'tlsSettings') as $key) {
+            // 非数组 / 空容器都不动：
+            //  - 非数组由 nodeComplete 的 $nodeArrayKeys 直接丢弃（这里不越权造数组）
+            //  - 空数组不是任何解析器版本会产出的形状（旧版也至少写 server_name / allow_insecure /
+            //    fingerprint），动它会翻转 ClashMeta `if ($tlsSettings)` 的真值、改变下发内容，
+            //    属于无收益的行为变更
+            if (!isset($node[$key]) || !is_array($node[$key]) || !$node[$key]) {
+                continue;
+            }
+            if (!array_key_exists('public_key', $node[$key])) {
+                $node[$key]['public_key'] = '';
+            }
+            if (!array_key_exists('short_id', $node[$key])) {
+                $node[$key]['short_id'] = '';
+            }
+        }
+
+        return $node;
     }
 
     /**

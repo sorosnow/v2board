@@ -122,10 +122,14 @@ class ConfigController extends Controller
                 'subscribe_limit_expire' => (int)config('v2board.subscribe_limit_expire', 1),
                 'extra_subscribe_enable' => (int)config('v2board.extra_subscribe_enable', 0),
                 // extra subscribe：单个多行输入框（一行一条，**回车换行**，不支持逗号）。
-                // 兼容迁移：旧槽位键 extra_subscribe_url_1/_2 若还在，拼成多行回显，
-                // 后台保存一次即完成迁移（槽位键此后不再被读取）。
-                'extra_subscribe_url' => config('v2board.extra_subscribe_url')
-                    ?: trim(config('v2board.extra_subscribe_url_1', '') . "\n"
+                // 兼容迁移：**只在新键还没被写过（null）时**才回落到旧槽位键
+                // extra_subscribe_url_1/_2 拼成多行回显；保存一次即写入新键、迁移完成
+                // （保存侧随后清掉旧键）。
+                // 这里必须判 null，不能判假值：新键存成 ''（管理员清空链接）是**合法状态**，
+                // 若按假值回落旧键，后台会一直显示早已不再下发的旧链接，与服务层读的值不一致。
+                'extra_subscribe_url' => config('v2board.extra_subscribe_url') !== null
+                    ? config('v2board.extra_subscribe_url')
+                    : trim(config('v2board.extra_subscribe_url_1', '') . "\n"
                         . config('v2board.extra_subscribe_url_2', '')),
                 'extra_subscribe_cache_ttl' => (int)config('v2board.extra_subscribe_cache_ttl', 300),
                 'extra_subscribe_timeout' => (int)config('v2board.extra_subscribe_timeout', 5),
@@ -207,13 +211,21 @@ class ConfigController extends Controller
         $data = $request->validated();
         $config = config('v2board');
         foreach (ConfigSave::RULES as $k => $v) {
-            if (!in_array($k, array_keys(ConfigSave::RULES))) {
-                unset($config[$k]);
-                continue;
-            }
             if (array_key_exists($k, $data)) {
                 $config[$k] = $data[$k];
             }
+        }
+        // 旧槽位键（extra_subscribe_url_1/_2）已完成迁移：只在**本次保存确实写入了新键**时清掉，
+        // 否则「只提交了其它字段」的保存会连链接一起清空（新前端就是只提交 dirty 字段）。
+        //
+        // 注意：这里**不要**改成「拿 ConfigSave::RULES 去裁剪整个 $config」。
+        // RULES 不是 v2board 配置的全集 —— frontend_admin_path / server_log_enable /
+        // server_v2ray_domain / server_v2ray_protocol / stripe_pk_live 都不在 RULES 里，
+        // 按 RULES 裁剪会在每次保存时把它们从 config/v2board.php 里删掉。
+        // （原代码这里写的是 `foreach (ConfigSave::RULES as $k => $v)` 再判
+        //   `!in_array($k, array_keys(ConfigSave::RULES))`，条件恒为 false，是段死代码。）
+        if (array_key_exists('extra_subscribe_url', $data)) {
+            unset($config['extra_subscribe_url_1'], $config['extra_subscribe_url_2']);
         }
         $data = var_export($config, 1);
         if (!File::put(base_path() . '/config/v2board.php', "<?php\n return $data ;")) {

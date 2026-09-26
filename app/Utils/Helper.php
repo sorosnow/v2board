@@ -412,7 +412,12 @@ class Helper
             }
         }
         if (isset($server['encryption']) && $server['encryption'] == 'mlkem768x25519plus') {
-            $encSettings = $server['encryption_settings'];
+            // 最后一道兜底：只要 encryption 是 mlkem、却没有 encryption_settings，原代码这里就是
+            // Undefined array key → 整份订阅 500。正常路径上不该有这种节点
+            // （附加订阅侧：解析器整条跳过 + $nodeValues 拦掉旧存储；站点侧：VlessController
+            //  保存时必生成该键），所以这里只为「DB 直改 / 历史脏行 / 将来新增的调用方」兜底，
+            // 代价是退化成一条空 password 的节点 —— 比整份订阅 500 好。
+            $encSettings = $server['encryption_settings'] ?? [];
             $enc = 'mlkem768x25519plus.' . ($encSettings['mode'] ?? 'native') . '.' . ($encSettings['rtt'] ?? '1rtt');
             if (isset($encSettings['client_padding']) && !empty($encSettings['client_padding'])) {
                 $enc .= '.' . $encSettings['client_padding'];
