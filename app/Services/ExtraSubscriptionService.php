@@ -223,9 +223,10 @@ class ExtraSubscriptionService
         }
 
         $urls = $this->urls(null, true);
-        if (!$urls) {
-            return $summary;
-        }
+        // 注意：$urls 为空**不能**在这里提前 return —— 配置里把链接全删掉时，
+        // 还要靠下面那段清理把存储里的旧记录清掉（记录里含第三方凭据），
+        // 否则它会永久留在 storage/app/extra-subscribe.json 里。
+        // 没有链接时 $due 必然为空，不会发起任何请求，只是把存储清空。
 
         // storage/app 在个别部署里可能不存在：先确保目录在，
         // 否则锁文件与存储文件都写不进去，功能会静默失效
